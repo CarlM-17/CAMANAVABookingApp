@@ -47,24 +47,24 @@ async function getLookups() {
   const storeRows = res.data.valueRanges[1].values || [];
   const supRows = res.data.valueRanges[2].values || [];
 
-  // CustomerName: A=No, B=FullName, C=StoreID, D=StoreName, E=Region
+  // CustomerName: A=No, B=FullName, C=StoreID, D=StoreName(105-VAL), E=Region
   const customers = custRows.slice(1)
     .filter(r => r[1])
     .map(r => ({
       no: r[0] || '',
       name: r[1] || '',
-      storeId: r[2] || '',
+      storeId: String(r[2] || ''),
       storeName: r[3] || '',
       region: r[4] || '',
     }));
 
-  // ListOfStore: A=Region, B=Area, C=StoreID, D=StoreName
+  // ListOfStore: A=Region, B=Area, C=StoreID, D=StoreName(clean)
   const stores = storeRows.slice(1)
     .filter(r => r[3])
     .map(r => ({
       region: r[0] || '',
       area: r[1] || '',
-      storeId: r[2] || '',
+      storeId: String(r[2] || ''),
       storeName: r[3] || '',
     }));
 
@@ -132,7 +132,7 @@ app.post('/api/bookings', async (req, res) => {
       if (b[f]) b[f] = upper(b[f]);
     });
 
-    const required = ['Customer_Name','Customer_No','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Total_Booked_Amount'];
+    const required = ['Customer_Name','Customer_No','Region','Area','Store_Delivery','Dept','Supplier','Deals','Total_Booked_Amount'];
     for (const f of required) {
       if (!b[f] && b[f] !== 0) return res.status(400).json({ error: `${f} is required` });
     }
@@ -140,9 +140,12 @@ app.post('/api/bookings', async (req, res) => {
       return res.status(400).json({ error: 'Total Booked Amount must be a number' });
     }
 
-    const existing = await readBookings();
-    if (existing.some(r => String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase())) {
-      return res.status(409).json({ error: `Booking# ${b.Booking_No} already exists` });
+    // Duplicate check only if Booking_No is provided
+    if (b.Booking_No) {
+      const existing = await readBookings();
+      if (existing.some(r => String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase())) {
+        return res.status(409).json({ error: `Booking# ${b.Booking_No} already exists` });
+      }
     }
 
     const row = [
@@ -179,7 +182,7 @@ app.put('/api/bookings/:rowIndex', async (req, res) => {
     Object.keys(b).forEach(k => { b[k] = trim(b[k]); });
 
     const existing = await readBookings();
-    if (existing.some(r => r.rowIndex !== rowIndex && String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase())) {
+    if (b.Booking_No && existing.some(r => r.rowIndex !== rowIndex && String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase())) {
       return res.status(409).json({ error: `Booking# ${b.Booking_No} already exists` });
     }
 
@@ -351,7 +354,7 @@ const HTML = `<!DOCTYPE html>
           <div class="col-md-4 col-sm-6"><label class="form-label">Store Delivery <span class="required-mark">*</span></label><input list="storeList" class="form-control" id="Store_Delivery" autocomplete="off"><datalist id="storeList"></datalist></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Dept <span class="required-mark">*</span></label><input list="deptList" class="form-control" id="Dept" autocomplete="off" placeholder="Type to search..."><datalist id="deptList"></datalist></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Supplier <span class="required-mark">*</span></label><input list="supplierList" class="form-control" id="Supplier" autocomplete="off" placeholder="Type to search..."><datalist id="supplierList"></datalist></div>
-          <div class="col-md-4 col-sm-6"><label class="form-label">Booking # <span class="required-mark">*</span></label><input type="text" class="form-control" id="Booking_No"></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Booking #</label><input type="text" class="form-control" id="Booking_No" placeholder="Optional"></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Deals <span class="required-mark">*</span></label><input type="text" class="form-control" id="Deals"></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Total Booked Amount <span class="required-mark">*</span></label><input type="number" step="0.01" class="form-control" id="Total_Booked_Amount" placeholder="0.00"></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Remarks</label><input type="text" class="form-control" id="Remarks"></div>
@@ -463,10 +466,17 @@ document.getElementById('Customer_Name').addEventListener('change', e => {
   if (c) {
     document.getElementById('Customer_No').value = c.no;
     document.getElementById('Region').value = c.region;
-    document.getElementById('Store_Delivery').value = c.storeName;
-    // Find area from store
-    const st = lookups.stores.find(s => s.storeName === c.storeName);
-    document.getElementById('Area').value = st ? st.area : '';
+    // Match store via Store ID (most reliable since customer.storeName is "105-VAL" but ListOfStore.storeName is "Valenzuela")
+    const st = lookups.stores.find(s => s.storeId === c.storeId);
+    if (st) {
+      document.getElementById('Store_Delivery').value = st.storeName;
+      document.getElementById('Area').value = st.area;
+      document.getElementById('Region').value = st.region;
+    } else {
+      // Fallback to customer's own storeName if no match
+      document.getElementById('Store_Delivery').value = c.storeName;
+      document.getElementById('Area').value = '';
+    }
   } else {
     document.getElementById('Customer_No').value = '';
     document.getElementById('Region').value = '';
@@ -511,7 +521,7 @@ async function saveBooking(){
     Remarks: document.getElementById('Remarks').value,
   };
 
-  const required = ['Customer_Name','Customer_No','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Total_Booked_Amount'];
+  const required = ['Customer_Name','Customer_No','Region','Area','Store_Delivery','Dept','Supplier','Deals','Total_Booked_Amount'];
   for (const f of required){
     if (!payload[f]){ toast('Please fill: ' + f.replace(/_/g,' '), 'error'); return; }
   }
