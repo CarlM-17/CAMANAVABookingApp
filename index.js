@@ -91,7 +91,7 @@ function upper(v) { return typeof v === 'string' ? v.toUpperCase() : v; }
 async function readBookings() {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: `${MAIN_SHEET}!A:L`,
+    range: `${MAIN_SHEET}!A:N`,
   });
   const rows = res.data.values || [];
   if (rows.length <= 1) return [];
@@ -110,21 +110,100 @@ async function readBookings() {
     Deals: r[9] || '',
     Total_Booked_Amount: r[10] || '',
     Remarks: r[11] || '',
+    Logged_By: r[12] || '',
+    Last_Edited_By: r[13] || '',
   }));
 }
 
+// ===== READ USERS (cached 60s) =====
+let userCache = { data: null, ts: 0 };
+async function readUsers() {
+  if (userCache.data && Date.now() - userCache.ts < CACHE_MS) return userCache.data;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: 'Users!A:D',
+  });
+  const rows = res.data.values || [];
+  const users = rows.slice(1).filter(r => r[0]).map(r => ({
+    username: String(r[0]).trim().toLowerCase(),
+    password: String(r[1] || ''),
+    fullName: r[2] || r[0],
+    role: (r[3] || 'user').toLowerCase(),
+  }));
+  userCache.data = users;
+  userCache.ts = Date.now();
+  return users;
+}
+
+// ===== SIMPLE SESSION (in-memory token store) =====
+// Tokens stored server-side. Cleared on app restart (users will need to log in again).
+const sessions = new Map(); // token -> { username, fullName, role, ts }
+const SESSION_DAYS = 30;
+
+function makeToken() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+function authUser(req) {
+  const token = req.headers['x-auth-token'];
+  if (!token) return null;
+  const s = sessions.get(token);
+  if (!s) return null;
+  if (Date.now() - s.ts > SESSION_DAYS * 86400000) {
+    sessions.delete(token);
+    return null;
+  }
+  return s;
+}
+
+function requireAuth(req, res, next) {
+  const u = authUser(req);
+  if (!u) return res.status(401).json({ error: 'Not logged in' });
+  req.user = u;
+  next();
+}
+
+// ===== AUTH ROUTES =====
+app.post('/api/login', async (req, res) => {
+  try {
+    const username = String(req.body.username || '').trim().toLowerCase();
+    const password = String(req.body.password || '');
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+
+    const users = await readUsers();
+    const u = users.find(x => x.username === username && x.password === password);
+    if (!u) return res.status(401).json({ error: 'Invalid username or password' });
+
+    const token = makeToken();
+    sessions.set(token, { username: u.username, fullName: u.fullName, role: u.role, ts: Date.now() });
+    res.json({ token, username: u.username, fullName: u.fullName, role: u.role });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/logout', (req, res) => {
+  const token = req.headers['x-auth-token'];
+  if (token) sessions.delete(token);
+  res.json({ ok: true });
+});
+
+app.get('/api/me', (req, res) => {
+  const u = authUser(req);
+  if (!u) return res.status(401).json({ error: 'Not logged in' });
+  res.json({ username: u.username, fullName: u.fullName, role: u.role });
+});
+
 // ===== API ROUTES =====
-app.get('/api/lookups', async (req, res) => {
+app.get('/api/lookups', requireAuth, async (req, res) => {
   try { res.json(await getLookups()); }
   catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/bookings', async (req, res) => {
+app.get('/api/bookings', requireAuth, async (req, res) => {
   try { res.json(await readBookings()); }
   catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/bookings', async (req, res) => {
+app.post('/api/bookings', requireAuth, async (req, res) => {
   try {
     const b = req.body;
     Object.keys(b).forEach(k => { b[k] = trim(b[k]); });
@@ -157,15 +236,17 @@ app.post('/api/bookings', async (req, res) => {
       b.Store_Delivery,
       b.Dept,
       b.Supplier,
-      b.Booking_No,
+      b.Booking_No || '',
       b.Deals,
       parseFloat(b.Total_Booked_Amount),
       b.Remarks || '',
+      req.user.username,  // Logged_By
+      '',                  // Last_Edited_By empty on create
     ];
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
-      range: `${MAIN_SHEET}!A:L`,
+      range: `${MAIN_SHEET}!A:N`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [row] },
@@ -175,13 +256,21 @@ app.post('/api/bookings', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/bookings/:rowIndex', async (req, res) => {
+app.put('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
   try {
     const rowIndex = parseInt(req.params.rowIndex);
     const b = req.body;
     Object.keys(b).forEach(k => { b[k] = trim(b[k]); });
 
     const existing = await readBookings();
+    const target = existing.find(r => r.rowIndex === rowIndex);
+    if (!target) return res.status(404).json({ error: 'Booking not found' });
+
+    // Ownership check: non-admins can only edit their own
+    if (req.user.role !== 'admin' && target.Logged_By.toLowerCase() !== req.user.username) {
+      return res.status(403).json({ error: 'You can only edit your own bookings' });
+    }
+
     if (b.Booking_No && existing.some(r => r.rowIndex !== rowIndex && String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase())) {
       return res.status(409).json({ error: `Booking# ${b.Booking_No} already exists` });
     }
@@ -195,15 +284,17 @@ app.put('/api/bookings/:rowIndex', async (req, res) => {
       b.Store_Delivery,
       b.Dept,
       b.Supplier,
-      b.Booking_No,
+      b.Booking_No || '',
       b.Deals,
       parseFloat(b.Total_Booked_Amount),
       b.Remarks || '',
+      target.Logged_By,         // preserve original creator
+      req.user.username,         // Last_Edited_By
     ];
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: `${MAIN_SHEET}!A${rowIndex}:L${rowIndex}`,
+      range: `${MAIN_SHEET}!A${rowIndex}:N${rowIndex}`,
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [row] },
     });
@@ -211,8 +302,11 @@ app.put('/api/bookings/:rowIndex', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/bookings/:rowIndex', async (req, res) => {
+app.delete('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
   try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can delete bookings' });
+    }
     const rowIndex = parseInt(req.params.rowIndex);
     const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
     const ms = meta.data.sheets.find(s => s.properties.title === MAIN_SHEET);
@@ -245,7 +339,7 @@ const HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Booking Management</title>
+<title>CaMaNaVa Booking Management</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -287,13 +381,39 @@ const HTML = `<!DOCTYPE html>
   .form-label{font-size:13px;font-weight:500;margin-bottom:4px}
   .required-mark{color:var(--danger)}
   @media(max-width:768px){.stat-card .value{font-size:20px}.table td,.table th{font-size:12px}}
+  .owner-badge{position:fixed;bottom:14px;right:14px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;padding:6px 14px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:.5px;box-shadow:0 4px 12px rgba(37,99,235,.35);z-index:9997;user-select:none}
+  .login-screen{position:fixed;inset:0;background:linear-gradient(135deg,#1e3a8a,#7c3aed);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px}
+  .login-box{background:var(--card);border-radius:16px;padding:32px;width:100%;max-width:380px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+  .login-box h4{margin-bottom:4px;color:var(--text)}
+  .login-box .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
+  .app-hidden{display:none}
+  .user-chip{display:inline-flex;align-items:center;gap:8px;padding:4px 12px;background:var(--bg);border:1px solid var(--border);border-radius:20px;font-size:13px;color:var(--text)}
+  .user-chip .role-tag{background:var(--primary);color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;text-transform:uppercase}
+  .user-chip .role-tag.admin{background:#dc2626}
 </style>
 </head>
 <body>
 
-<div class="navbar-custom d-flex justify-content-between align-items-center">
-  <h5 class="m-0"><i class="fas fa-calendar-check me-2 text-primary"></i>Booking Management</h5>
-  <button class="theme-toggle" onclick="toggleTheme()"><i class="fas fa-moon" id="themeIcon"></i></button>
+<div class="login-screen" id="loginScreen">
+  <div class="login-box">
+    <h4><i class="fas fa-calendar-check text-primary me-2"></i>CaMaNaVa Booking</h4>
+    <div class="sub">Sign in to continue</div>
+    <div class="mb-3"><label class="form-label">Username</label><input type="text" class="form-control" id="loginUser" autocomplete="username"></div>
+    <div class="mb-3"><label class="form-label">Password</label><input type="password" class="form-control" id="loginPass" autocomplete="current-password"></div>
+    <button class="btn btn-primary w-100" id="btnLogin" onclick="doLogin()"><i class="fas fa-sign-in-alt me-1"></i>Login</button>
+    <div id="loginError" class="text-danger small mt-2" style="display:none"></div>
+  </div>
+</div>
+
+<div id="appContainer" class="app-hidden">
+
+<div class="navbar-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
+  <h5 class="m-0"><i class="fas fa-calendar-check me-2 text-primary"></i>CaMaNaVa Booking Management</h5>
+  <div class="d-flex align-items-center gap-2">
+    <span class="user-chip"><i class="fas fa-user"></i><span id="userName"></span><span class="role-tag" id="userRole"></span></span>
+    <button class="theme-toggle" onclick="toggleTheme()"><i class="fas fa-moon" id="themeIcon"></i></button>
+    <button class="theme-toggle" onclick="doLogout()" title="Logout"><i class="fas fa-sign-out-alt"></i></button>
+  </div>
 </div>
 
 <div class="container-fluid p-3 p-md-4">
@@ -383,6 +503,7 @@ const HTML = `<!DOCTYPE html>
               <th data-sort="Supplier">Supplier ⇅</th>
               <th data-sort="Dept">Dept ⇅</th>
               <th data-sort="Total_Booked_Amount" class="text-end">Amount ⇅</th>
+              <th data-sort="Logged_By">Logged By ⇅</th>
               <th>Actions</th>
             </tr></thead>
             <tbody id="tableBody"></tbody>
@@ -397,9 +518,11 @@ const HTML = `<!DOCTYPE html>
 
   </div>
 </div>
+</div>
 
 <div class="toast-container" id="toastContainer"></div>
 <div class="spinner-overlay" id="spinner"><div class="spinner-border text-light"></div></div>
+<div class="owner-badge">By Carl_M@17</div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
@@ -411,6 +534,11 @@ let sortField = 'Date_Booked';
 let sortAsc = false;
 let currentGroup = 'Supplier';
 let charts = {};
+let currentUser = null;  // { username, fullName, role }
+
+function getToken(){ return localStorage.getItem('authToken'); }
+function setToken(t){ localStorage.setItem('authToken', t); }
+function clearToken(){ localStorage.removeItem('authToken'); }
 
 function toast(msg, type='success') {
   const el = document.createElement('div');
@@ -440,12 +568,74 @@ function parseMDY(s){ if(!s) return null; const [m,d,y]=s.split('/').map(Number)
 
 async function api(method, url, body){
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  const t = getToken();
+  if (t) opts.headers['x-auth-token'] = t;
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
   const data = await res.json();
+  if (res.status === 401) {
+    clearToken();
+    showLogin();
+    throw new Error('Session expired, please log in again');
+  }
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
 }
+
+function showLogin(){
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('appContainer').classList.add('app-hidden');
+  currentUser = null;
+}
+
+function showApp(){
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appContainer').classList.remove('app-hidden');
+  document.getElementById('userName').textContent = currentUser.fullName;
+  const roleEl = document.getElementById('userRole');
+  roleEl.textContent = currentUser.role;
+  roleEl.className = 'role-tag ' + (currentUser.role === 'admin' ? 'admin' : '');
+}
+
+async function doLogin(){
+  const btn = document.getElementById('btnLogin');
+  const err = document.getElementById('loginError');
+  err.style.display = 'none';
+  const u = document.getElementById('loginUser').value.trim();
+  const p = document.getElementById('loginPass').value;
+  if (!u || !p){ err.textContent = 'Enter username and password'; err.style.display = 'block'; return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Signing in...';
+  try {
+    const res = await fetch('/api/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username: u, password: p}) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Login failed');
+    setToken(data.token);
+    currentUser = { username: data.username, fullName: data.fullName, role: data.role };
+    showApp();
+    document.getElementById('loginPass').value = '';
+    await initApp();
+  } catch(e){
+    err.textContent = e.message;
+    err.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-sign-in-alt me-1"></i>Login';
+  }
+}
+
+async function doLogout(){
+  if (!confirm('Log out now?')) return;
+  try { await api('POST', '/api/logout'); } catch(e) {}
+  clearToken();
+  document.getElementById('loginUser').value = '';
+  showLogin();
+}
+
+// Enter key submits login
+document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+document.getElementById('loginUser').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('loginPass').focus(); });
 
 async function loadLookups(){
   try {
@@ -624,23 +814,31 @@ function renderTable(){
 
   const tbody = document.getElementById('tableBody');
   if (!pageData.length){
-    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">No bookings found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">No bookings found</td></tr>';
   } else {
-    tbody.innerHTML = pageData.map(b => \`
+    tbody.innerHTML = pageData.map(b => {
+      const isOwner = currentUser && b.Logged_By.toLowerCase() === currentUser.username;
+      const isAdmin = currentUser && currentUser.role === 'admin';
+      const canEdit = isAdmin || isOwner;
+      const canDelete = isAdmin;
+      const editorTip = b.Last_Edited_By ? \` title="Last edited by \${b.Last_Edited_By}"\` : '';
+      return \`
       <tr>
         <td>\${b.Date_Booked}</td>
-        <td><strong>\${b.Booking_No}</strong></td>
+        <td><strong>\${b.Booking_No || '—'}</strong></td>
         <td>\${b.Customer_Name}</td>
         <td>\${b.Store_Delivery}</td>
         <td>\${b.Supplier}</td>
         <td>\${b.Dept}</td>
         <td class="text-end">\${fmtPeso(b.Total_Booked_Amount)}</td>
+        <td\${editorTip}>\${b.Logged_By}\${b.Last_Edited_By ? ' <i class="fas fa-pen text-muted" style="font-size:10px"></i>' : ''}</td>
         <td class="text-nowrap">
-          <button class="btn btn-sm btn-outline-primary action-btn" onclick="editBooking(\${b.rowIndex})"><i class="fas fa-edit"></i></button>
-          <button class="btn btn-sm btn-outline-danger action-btn" onclick="deleteBooking(\${b.rowIndex}, '\${b.Booking_No}')"><i class="fas fa-trash"></i></button>
+          \${canEdit ? \`<button class="btn btn-sm btn-outline-primary action-btn" onclick="editBooking(\${b.rowIndex})"><i class="fas fa-edit"></i></button>\` : ''}
+          \${canDelete ? \`<button class="btn btn-sm btn-outline-danger action-btn" onclick="deleteBooking(\${b.rowIndex}, '\${b.Booking_No || b.rowIndex}')"><i class="fas fa-trash"></i></button>\` : ''}
+          \${!canEdit && !canDelete ? '<span class="text-muted small">—</span>' : ''}
         </td>
-      </tr>
-    \`).join('');
+      </tr>\`;
+    }).join('');
   }
 
   document.getElementById('pageInfo').textContent = \`Showing \${start+1}-\${Math.min(start+PAGE_SIZE, data.length)} of \${data.length}\`;
@@ -774,13 +972,30 @@ function renderCharts(data){
   });
 }
 
-// INIT
-(async function init(){
+async function initApp(){
   document.getElementById('Date_Booked').value = todayStr();
   await loadLookups();
   await loadBookings();
   // Auto-refresh every 30s for multi-user sync
-  setInterval(loadBookings, 30000);
+  if (window._refreshInterval) clearInterval(window._refreshInterval);
+  window._refreshInterval = setInterval(loadBookings, 30000);
+}
+
+// INIT — try auto-login if token exists
+(async function(){
+  const t = getToken();
+  if (!t){ showLogin(); return; }
+  try {
+    const res = await fetch('/api/me', { headers: { 'x-auth-token': t } });
+    if (!res.ok) throw new Error('expired');
+    const me = await res.json();
+    currentUser = me;
+    showApp();
+    await initApp();
+  } catch(e){
+    clearToken();
+    showLogin();
+  }
 })();
 </script>
 </body>
