@@ -874,16 +874,24 @@ function getSummaryFiltered(){
   const store = document.getElementById('filterStore').value;
   const from = document.getElementById('filterFrom').value;
   const to = document.getElementById('filterTo').value;
+
+  // Parse YYYY-MM-DD as LOCAL date (not UTC) to avoid timezone shift
+  const parseInputDate = (s, endOfDay) => {
+    if (!s) return null;
+    const [y, m, d] = s.split('-').map(Number);
+    return endOfDay ? new Date(y, m-1, d, 23, 59, 59) : new Date(y, m-1, d, 0, 0, 0);
+  };
+  const fromDate = parseInputDate(from, false);
+  const toDate = parseInputDate(to, true);
+
   return allBookings.filter(b => {
     if (area && b.Area !== area) return false;
     if (store && b.Store_Delivery !== store) return false;
-    if (from){
+    if (fromDate || toDate){
       const d = parseMDY(b.Date_Booked);
-      if (d && d < new Date(from)) return false;
-    }
-    if (to){
-      const d = parseMDY(b.Date_Booked);
-      if (d && d > new Date(to)) return false;
+      if (!d) return false;
+      if (fromDate && d < fromDate) return false;
+      if (toDate && d > toDate) return false;
     }
     return true;
   });
