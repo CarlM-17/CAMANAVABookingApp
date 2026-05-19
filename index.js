@@ -343,6 +343,7 @@ const HTML = `<!DOCTYPE html>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{--bg:#f5f7fa;--card:#fff;--text:#1f2937;--muted:#6b7280;--border:#e5e7eb;--primary:#2563eb;--success:#10b981;--danger:#ef4444;--input:#fff}
   [data-theme="dark"]{--bg:#0f172a;--card:#1e293b;--text:#e2e8f0;--muted:#94a3b8;--border:#334155;--primary:#3b82f6;--input:#0f172a}
@@ -486,12 +487,18 @@ const HTML = `<!DOCTYPE html>
       </div>
 
       <div class="card p-3">
-        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
           <h6 class="m-0">All Bookings</h6>
-          <div class="d-flex gap-2">
-            <input type="text" class="form-control form-control-sm" id="searchTable" placeholder="Search..." style="width:200px">
+          <div class="d-flex gap-2 flex-wrap">
+            <input type="text" class="form-control form-control-sm" id="searchTable" placeholder="Search..." style="width:180px">
+            <button class="btn btn-sm btn-success" onclick="exportExcel()"><i class="fas fa-file-excel me-1"></i>Export Excel</button>
             <button class="btn btn-sm btn-outline-primary" onclick="loadBookings()"><i class="fas fa-sync"></i></button>
           </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6 col-md-3"><label class="form-label">Area</label><select class="form-select form-select-sm" id="tblFilterArea"><option value="">All Areas</option></select></div>
+          <div class="col-6 col-md-3"><label class="form-label">Store</label><select class="form-select form-select-sm" id="tblFilterStore"><option value="">All Stores</option></select></div>
+          <div class="col-12 col-md-2 d-flex align-items-end"><button class="btn btn-sm btn-outline-secondary w-100" onclick="clearTblFilters()"><i class="fas fa-times me-1"></i>Clear Filters</button></div>
         </div>
         <div class="table-wrap">
           <table class="table table-hover table-sm">
@@ -787,11 +794,33 @@ async function loadBookings(){
 function populateAreaFilter(){
   const areas = [...new Set(allBookings.map(b => b.Area).filter(Boolean))].sort();
   document.getElementById('filterArea').innerHTML = '<option value="">All</option>' + areas.map(a => '<option>'+a+'</option>').join('');
+  // Same areas for table filter
+  const tblArea = document.getElementById('tblFilterArea');
+  const curArea = tblArea.value;
+  tblArea.innerHTML = '<option value="">All Areas</option>' + areas.map(a => '<option>'+a+'</option>').join('');
+  tblArea.value = curArea;
+
+  // Table store filter — pull from actual booking data (handles both old and new naming)
+  const stores = [...new Set(allBookings.map(b => b.Store_Delivery).filter(Boolean))].sort();
+  const tblStore = document.getElementById('tblFilterStore');
+  const curStore = tblStore.value;
+  tblStore.innerHTML = '<option value="">All Stores</option>' + stores.map(s => '<option>'+s+'</option>').join('');
+  tblStore.value = curStore;
 }
 
 function getTableFiltered(){
   const q = document.getElementById('searchTable').value.toLowerCase();
+  const fArea = document.getElementById('tblFilterArea').value;
+  const fStore = (document.getElementById('tblFilterStore').value || '').toLowerCase();
   let data = allBookings;
+  if (fArea) data = data.filter(b => b.Area === fArea);
+  if (fStore) {
+    // Smart match: handles both clean names ("Valenzuela") and old format ("105-VAL")
+    data = data.filter(b => {
+      const s = String(b.Store_Delivery || '').toLowerCase();
+      return s === fStore || s.includes(fStore) || fStore.includes(s);
+    });
+  }
   if (q) data = data.filter(b => Object.values(b).some(v => String(v).toLowerCase().includes(q)));
   data = [...data].sort((a,b) => {
     let va = a[sortField], vb = b[sortField];
@@ -803,6 +832,63 @@ function getTableFiltered(){
     return 0;
   });
   return data;
+}
+
+function clearTblFilters(){
+  document.getElementById('tblFilterArea').value = '';
+  document.getElementById('tblFilterStore').value = '';
+  document.getElementById('searchTable').value = '';
+  currentPage = 1;
+  renderTable();
+}
+
+function exportExcel(){
+  const data = getTableFiltered();
+  if (!data.length){ toast('No data to export', 'error'); return; }
+
+  // Build rows with headers exactly as on the Booking sheet (A-L, exclude M and N)
+  const headers = ['Date_Booked','Customer_No','Customer_Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Total_Booked_Amount','Remarks'];
+  const rows = [headers, ...data.map(b => headers.map(h => {
+    if (h === 'Total_Booked_Amount') return parseFloat(b[h]) || 0;
+    return b[h] || '';
+  }))];
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+
+  // Style header row: dark green fill, white bold font
+  const headerStyle = {
+    fill: { patternType: 'solid', fgColor: { rgb: '006100' } },
+    font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 11 },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: {
+      top: { style: 'thin', color: { rgb: '000000' } },
+      bottom: { style: 'thin', color: { rgb: '000000' } },
+      left: { style: 'thin', color: { rgb: '000000' } },
+      right: { style: 'thin', color: { rgb: '000000' } }
+    }
+  };
+  for (let c = 0; c < headers.length; c++){
+    const addr = XLSX.utils.encode_cell({ r: 0, c });
+    if (ws[addr]) ws[addr].s = headerStyle;
+  }
+
+  // Auto-size columns
+  ws['!cols'] = headers.map(h => ({ wch: Math.max(h.length + 2, 15) }));
+
+  // Currency format on Total_Booked_Amount column (K = index 10)
+  const currencyFmt = '#,##0.00';
+  for (let r = 1; r <= data.length; r++){
+    const addr = XLSX.utils.encode_cell({ r, c: 10 });
+    if (ws[addr]) ws[addr].z = currencyFmt;
+  }
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'BookingData');
+
+  const d = new Date();
+  const stamp = \`\${d.getFullYear()}-\${String(d.getMonth()+1).padStart(2,'0')}-\${String(d.getDate()).padStart(2,'0')}_\${String(d.getHours()).padStart(2,'0')}-\${String(d.getMinutes()).padStart(2,'0')}\`;
+  XLSX.writeFile(wb, \`BookingData_\${stamp}.xlsx\`);
+  toast(\`Exported \${data.length} rows\`);
 }
 
 function renderTable(){
@@ -867,6 +953,8 @@ document.querySelectorAll('th[data-sort]').forEach(th => {
   });
 });
 document.getElementById('searchTable').addEventListener('input', () => { currentPage = 1; renderTable(); });
+document.getElementById('tblFilterArea').addEventListener('change', () => { currentPage = 1; renderTable(); });
+document.getElementById('tblFilterStore').addEventListener('change', () => { currentPage = 1; renderTable(); });
 
 // SUMMARY
 function getSummaryFiltered(){
