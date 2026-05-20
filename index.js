@@ -122,7 +122,7 @@ async function readUsers() {
   if (userCache.data && Date.now() - userCache.ts < CACHE_MS) return userCache.data;
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: 'Users!A:D',
+    range: 'Users!A:E',
   });
   const rows = res.data.values || [];
   const users = rows.slice(1).filter(r => r[0]).map(r => ({
@@ -130,10 +130,34 @@ async function readUsers() {
     password: String(r[1] || ''),
     fullName: r[2] || r[0],
     role: (r[3] || 'user').toLowerCase(),
+    storeAccess: String(r[4] || '').trim(),  // Store name, Area name, "All", or empty
   }));
   userCache.data = users;
   userCache.ts = Date.now();
   return users;
+}
+
+// Resolve a user's storeAccess into a list of allowed store names.
+// Returns null = unrestricted (all stores). Returns [] or [names] = limited.
+async function resolveStoreAccess(user) {
+  if (!user) return null;
+  if (user.role === 'admin') return null;  // admins see everything
+  const access = (user.storeAccess || '').trim();
+  if (!access || access.toLowerCase() === 'all') return null;
+
+  const lookups = await getLookups();
+  const lc = access.toLowerCase();
+
+  // Try store name match first
+  const storeMatch = lookups.stores.find(s => s.storeName.toLowerCase() === lc);
+  if (storeMatch) return [storeMatch.storeName];
+
+  // Fall back to area match -> all stores in that area
+  const areaStores = lookups.stores.filter(s => s.area.toLowerCase() === lc).map(s => s.storeName);
+  if (areaStores.length) return areaStores;
+
+  // Value doesn't match anything -> block all access (safer than allowing everything)
+  return [];
 }
 
 // ===== SIMPLE SESSION (in-memory token store) =====
@@ -176,8 +200,8 @@ app.post('/api/login', async (req, res) => {
     if (!u) return res.status(401).json({ error: 'Invalid username or password' });
 
     const token = makeToken();
-    sessions.set(token, { username: u.username, fullName: u.fullName, role: u.role, ts: Date.now() });
-    res.json({ token, username: u.username, fullName: u.fullName, role: u.role });
+    sessions.set(token, { username: u.username, fullName: u.fullName, role: u.role, storeAccess: u.storeAccess, ts: Date.now() });
+    res.json({ token, username: u.username, fullName: u.fullName, role: u.role, storeAccess: u.storeAccess });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
@@ -190,7 +214,7 @@ app.post('/api/logout', (req, res) => {
 app.get('/api/me', (req, res) => {
   const u = authUser(req);
   if (!u) return res.status(401).json({ error: 'Not logged in' });
-  res.json({ username: u.username, fullName: u.fullName, role: u.role });
+  res.json({ username: u.username, fullName: u.fullName, role: u.role, storeAccess: u.storeAccess });
 });
 
 // ===== API ROUTES =====
@@ -200,7 +224,13 @@ app.get('/api/lookups', requireAuth, async (req, res) => {
 });
 
 app.get('/api/bookings', requireAuth, async (req, res) => {
-  try { res.json(await readBookings()); }
+  try {
+    const all = await readBookings();
+    const allowed = await resolveStoreAccess(req.user);
+    if (allowed === null) return res.json(all);
+    const set = new Set(allowed.map(s => s.toLowerCase()));
+    res.json(all.filter(b => set.has(String(b.Store_Delivery).toLowerCase())));
+  }
   catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
@@ -218,6 +248,15 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
     }
     if (isNaN(parseFloat(b.Total_Booked_Amount))) {
       return res.status(400).json({ error: 'Total Booked Amount must be a number' });
+    }
+
+    // Enforce store access
+    const allowed = await resolveStoreAccess(req.user);
+    if (allowed !== null) {
+      const set = new Set(allowed.map(s => s.toLowerCase()));
+      if (!set.has(String(b.Store_Delivery).toLowerCase())) {
+        return res.status(403).json({ error: `You don't have access to store: ${b.Store_Delivery}` });
+      }
     }
 
     // Duplicate check only if Booking_No is provided
@@ -270,6 +309,15 @@ app.put('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
     // Ownership check: non-admins can only edit their own
     if (req.user.role !== 'admin' && target.Logged_By.toLowerCase() !== req.user.username) {
       return res.status(403).json({ error: 'You can only edit your own bookings' });
+    }
+
+    // Enforce store access on the edited store too
+    const allowed = await resolveStoreAccess(req.user);
+    if (allowed !== null) {
+      const set = new Set(allowed.map(s => s.toLowerCase()));
+      if (!set.has(String(b.Store_Delivery).toLowerCase())) {
+        return res.status(403).json({ error: `You don't have access to store: ${b.Store_Delivery}` });
+      }
     }
 
     if (b.Booking_No && existing.some(r => r.rowIndex !== rowIndex && String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase())) {
@@ -363,7 +411,13 @@ async function readTransactions() {
 }
 
 app.get('/api/transactions', requireAuth, async (req, res) => {
-  try { res.json(await readTransactions()); }
+  try {
+    const all = await readTransactions();
+    const allowed = await resolveStoreAccess(req.user);
+    if (allowed === null) return res.json(all);
+    const set = new Set(allowed.map(s => s.toLowerCase()));
+    res.json(all.filter(t => set.has(String(t.Store_Delivery).toLowerCase())));
+  }
   catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
@@ -375,6 +429,15 @@ app.get('/api/booking-lookup/:bookingNo', requireAuth, async (req, res) => {
     const all = await readBookings();
     const b = all.find(x => String(x.Booking_No).trim().toLowerCase() === target);
     if (!b) return res.status(404).json({ error: `Booking# ${req.params.bookingNo} not found in Booking sheet` });
+
+    // Enforce store access
+    const allowed = await resolveStoreAccess(req.user);
+    if (allowed !== null) {
+      const set = new Set(allowed.map(s => s.toLowerCase()));
+      if (!set.has(String(b.Store_Delivery).toLowerCase())) {
+        return res.status(403).json({ error: `Booking belongs to ${b.Store_Delivery} — outside your store access` });
+      }
+    }
     res.json(b);
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
@@ -390,6 +453,15 @@ app.post('/api/transactions', requireAuth, async (req, res) => {
     }
     if (isNaN(parseFloat(b.Transacted_Amount_Gross))) return res.status(400).json({ error: 'Gross amount must be a number' });
     if (b.Transacted_Discount_Net && isNaN(parseFloat(b.Transacted_Discount_Net))) return res.status(400).json({ error: 'Discount must be a number' });
+
+    // Enforce store access
+    const allowedT = await resolveStoreAccess(req.user);
+    if (allowedT !== null) {
+      const setT = new Set(allowedT.map(s => s.toLowerCase()));
+      if (!setT.has(String(b.Store_Delivery).toLowerCase())) {
+        return res.status(403).json({ error: `You don't have access to store: ${b.Store_Delivery}` });
+      }
+    }
 
     const gross = parseFloat(b.Transacted_Amount_Gross) || 0;
     const disc = parseFloat(b.Transacted_Discount_Net) || 0;
@@ -437,6 +509,15 @@ app.put('/api/transactions/:rowIndex', requireAuth, async (req, res) => {
 
     if (req.user.role !== 'admin' && target.Logged_By.toLowerCase() !== req.user.username) {
       return res.status(403).json({ error: 'You can only edit your own transactions' });
+    }
+
+    // Enforce store access
+    const allowedT2 = await resolveStoreAccess(req.user);
+    if (allowedT2 !== null) {
+      const setT2 = new Set(allowedT2.map(s => s.toLowerCase()));
+      if (!setT2.has(String(b.Store_Delivery).toLowerCase())) {
+        return res.status(403).json({ error: `You don't have access to store: ${b.Store_Delivery}` });
+      }
     }
 
     const gross = parseFloat(b.Transacted_Amount_Gross) || 0;
@@ -870,6 +951,20 @@ function showApp(){
   const roleEl = document.getElementById('userRole');
   roleEl.textContent = currentUser.role;
   roleEl.className = 'role-tag ' + (currentUser.role === 'admin' ? 'admin' : '');
+  // Show scope hint
+  const scope = (currentUser.storeAccess || '').trim();
+  if (currentUser.role !== 'admin' && scope && scope.toLowerCase() !== 'all'){
+    document.getElementById('userName').title = 'Scope: ' + scope;
+    if (!document.getElementById('userScope')){
+      const span = document.createElement('span');
+      span.id = 'userScope';
+      span.style.cssText = 'font-size:11px;color:var(--muted);margin-left:4px';
+      span.textContent = '· ' + scope;
+      document.getElementById('userName').parentNode.insertBefore(span, document.getElementById('userRole'));
+    } else {
+      document.getElementById('userScope').textContent = '· ' + scope;
+    }
+  }
 }
 
 async function doLogin(){
