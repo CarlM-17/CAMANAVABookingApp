@@ -18,6 +18,7 @@ const MAIN_SHEET = 'Booking';
 const CUSTOMER_SHEET = 'CustomerName';
 const STORE_SHEET = 'ListOfStore';
 const SUPPLIER_SHEET = 'Supplier';
+const TRX_SHEET = 'BookingTransaction';
 
 const auth = new google.auth.JWT(
   SERVICE_ACCOUNT_EMAIL,
@@ -331,6 +332,173 @@ app.delete('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
+// ===== TRANSACTIONS =====
+async function readTransactions() {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${TRX_SHEET}!A:P`,
+  });
+  const rows = res.data.values || [];
+  if (rows.length <= 1) return [];
+
+  return rows.slice(1).map((r, i) => ({
+    rowIndex: i + 2,
+    Date_Transacted: r[0] || '',
+    Customer_No: r[1] || '',
+    Name: r[2] || '',
+    Region: r[3] || '',
+    Area: r[4] || '',
+    Store_Delivery: r[5] || '',
+    Dept: r[6] || '',
+    Supplier: r[7] || '',
+    Booking_No: r[8] || '',
+    Deals: r[9] || '',
+    Transacted_Amount_Gross: r[10] || '',
+    Transacted_Discount_Net: r[11] || '',
+    Transacted_Amount_Net: r[12] || '',
+    TRX_Number: r[13] || '',
+    Logged_By: r[14] || '',
+    Last_Edited_By: r[15] || '',
+  }));
+}
+
+app.get('/api/transactions', requireAuth, async (req, res) => {
+  try { res.json(await readTransactions()); }
+  catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+// Look up a Booking# from the Booking sheet to auto-fill the transaction form
+app.get('/api/booking-lookup/:bookingNo', requireAuth, async (req, res) => {
+  try {
+    const target = String(req.params.bookingNo).trim().toLowerCase();
+    if (!target) return res.status(400).json({ error: 'Booking# required' });
+    const all = await readBookings();
+    const b = all.find(x => String(x.Booking_No).trim().toLowerCase() === target);
+    if (!b) return res.status(404).json({ error: `Booking# ${req.params.bookingNo} not found in Booking sheet` });
+    res.json(b);
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/transactions', requireAuth, async (req, res) => {
+  try {
+    const b = req.body;
+    Object.keys(b).forEach(k => { b[k] = trim(b[k]); });
+
+    const required = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Transacted_Amount_Gross','Transacted_Amount_Net','TRX_Number'];
+    for (const f of required) {
+      if (!b[f] && b[f] !== 0) return res.status(400).json({ error: `${f} is required` });
+    }
+    if (isNaN(parseFloat(b.Transacted_Amount_Gross))) return res.status(400).json({ error: 'Gross amount must be a number' });
+    if (b.Transacted_Discount_Net && isNaN(parseFloat(b.Transacted_Discount_Net))) return res.status(400).json({ error: 'Discount must be a number' });
+
+    const gross = parseFloat(b.Transacted_Amount_Gross) || 0;
+    const disc = parseFloat(b.Transacted_Discount_Net) || 0;
+    const net = gross - disc;
+
+    const row = [
+      b.Date_Transacted,
+      b.Customer_No,
+      b.Name,
+      b.Region,
+      b.Area,
+      b.Store_Delivery,
+      b.Dept,
+      b.Supplier,
+      b.Booking_No,
+      b.Deals || '',
+      gross,
+      disc,
+      net,
+      b.TRX_Number,
+      req.user.username,  // Logged_By
+      '',                  // Last_Edited_By
+    ];
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: `${TRX_SHEET}!A:P`,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [row] },
+    });
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/transactions/:rowIndex', requireAuth, async (req, res) => {
+  try {
+    const rowIndex = parseInt(req.params.rowIndex);
+    const b = req.body;
+    Object.keys(b).forEach(k => { b[k] = trim(b[k]); });
+
+    const existing = await readTransactions();
+    const target = existing.find(r => r.rowIndex === rowIndex);
+    if (!target) return res.status(404).json({ error: 'Transaction not found' });
+
+    if (req.user.role !== 'admin' && target.Logged_By.toLowerCase() !== req.user.username) {
+      return res.status(403).json({ error: 'You can only edit your own transactions' });
+    }
+
+    const gross = parseFloat(b.Transacted_Amount_Gross) || 0;
+    const disc = parseFloat(b.Transacted_Discount_Net) || 0;
+    const net = gross - disc;
+
+    const row = [
+      b.Date_Transacted,
+      b.Customer_No,
+      b.Name,
+      b.Region,
+      b.Area,
+      b.Store_Delivery,
+      b.Dept,
+      b.Supplier,
+      b.Booking_No,
+      b.Deals || '',
+      gross,
+      disc,
+      net,
+      b.TRX_Number,
+      target.Logged_By,
+      req.user.username,
+    ];
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `${TRX_SHEET}!A${rowIndex}:P${rowIndex}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [row] },
+    });
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/transactions/:rowIndex', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Only admins can delete transactions' });
+    const rowIndex = parseInt(req.params.rowIndex);
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    const ts = meta.data.sheets.find(s => s.properties.title === TRX_SHEET);
+    if (!ts) throw new Error('Transaction sheet not found');
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: {
+        requests: [{
+          deleteDimension: {
+            range: {
+              sheetId: ts.properties.sheetId,
+              dimension: 'ROWS',
+              startIndex: rowIndex - 1,
+              endIndex: rowIndex,
+            },
+          },
+        }],
+      },
+    });
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/refresh-cache', (req, res) => { invalidateCache(); res.json({ ok: true }); });
 
 // ===== FRONTEND =====
@@ -344,6 +512,7 @@ const HTML = `<!DOCTYPE html>
 <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.0/umd/index.min.js"></script>
 <style>
   :root{--bg:#f5f7fa;--card:#fff;--text:#1f2937;--muted:#6b7280;--border:#e5e7eb;--primary:#2563eb;--success:#10b981;--danger:#ef4444;--input:#fff}
   [data-theme="dark"]{--bg:#0f172a;--card:#1e293b;--text:#e2e8f0;--muted:#94a3b8;--border:#334155;--primary:#3b82f6;--input:#0f172a}
@@ -391,6 +560,12 @@ const HTML = `<!DOCTYPE html>
   .user-chip{display:inline-flex;align-items:center;gap:8px;padding:4px 12px;background:var(--bg);border:1px solid var(--border);border-radius:20px;font-size:13px;color:var(--text)}
   .user-chip .role-tag{background:var(--primary);color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;text-transform:uppercase}
   .user-chip .role-tag.admin{background:#dc2626}
+  .scanner-modal{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:10001;padding:20px}
+  .scanner-modal.show{display:flex}
+  .scanner-box{background:var(--card);border-radius:12px;padding:20px;width:100%;max-width:500px}
+  .scanner-video{width:100%;border-radius:8px;background:#000;max-height:60vh}
+  .scanner-status{text-align:center;margin-top:12px;color:var(--muted);font-size:13px}
+  .calc-display{background:var(--bg);padding:8px 12px;border-radius:6px;border:1px solid var(--border);font-weight:600;color:var(--success)}
 </style>
 </head>
 <body>
@@ -421,6 +596,7 @@ const HTML = `<!DOCTYPE html>
   <ul class="nav nav-tabs mb-3">
     <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#summaryTab">📊 Booking Summary</a></li>
     <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#addTab">➕ Add Booking</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#trxTab">📦 Booking Transaction</a></li>
   </ul>
 
   <div class="tab-content">
@@ -523,12 +699,96 @@ const HTML = `<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- BOOKING TRANSACTION TAB -->
+    <div class="tab-pane fade" id="trxTab">
+      <div class="card p-3 p-md-4 mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+          <h5 id="trxFormTitle" class="m-0">Add Transaction</h5>
+          <button class="btn btn-primary" onclick="openScanner()"><i class="fas fa-camera me-1"></i>Scan Barcode</button>
+        </div>
+        <input type="hidden" id="trxEditRowIndex">
+        <div class="row g-3">
+          <div class="col-md-4 col-sm-6">
+            <label class="form-label">Booking # <span class="required-mark">*</span></label>
+            <div class="input-group">
+              <input type="text" class="form-control" id="trx_Booking_No" placeholder="Scan or type Booking#">
+              <button class="btn btn-outline-primary" onclick="lookupBooking()"><i class="fas fa-search"></i></button>
+            </div>
+          </div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Date Transacted <span class="required-mark">*</span></label><input type="date" class="form-control" id="trx_Date_Transacted"></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">TRX Number <span class="required-mark">*</span></label><input type="text" class="form-control" id="trx_TRX_Number" placeholder="Transaction reference"></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Customer Name</label><input type="text" class="form-control" id="trx_Name" readonly></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Customer No</label><input type="text" class="form-control" id="trx_Customer_No" readonly></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Region</label><input type="text" class="form-control" id="trx_Region" readonly></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Area</label><input type="text" class="form-control" id="trx_Area" readonly></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Store Delivery</label><input type="text" class="form-control" id="trx_Store_Delivery" readonly></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Dept</label><input type="text" class="form-control" id="trx_Dept" readonly></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Supplier</label><input type="text" class="form-control" id="trx_Supplier" readonly></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Deals</label><input type="text" class="form-control" id="trx_Deals" readonly></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Gross Amount <span class="required-mark">*</span></label><input type="number" step="0.01" class="form-control" id="trx_Gross" placeholder="0.00" oninput="calcNet()"></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Discount</label><input type="number" step="0.01" class="form-control" id="trx_Discount" placeholder="0.00" oninput="calcNet()"></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Net Amount <span class="text-muted small">(auto)</span></label><input type="text" class="form-control calc-display" id="trx_Net" readonly value="0.00"></div>
+        </div>
+        <div class="mt-3 d-flex gap-2 flex-wrap">
+          <button class="btn btn-success" id="trxBtnSave" onclick="saveTransaction()"><i class="fas fa-save me-1"></i>Save</button>
+          <button class="btn btn-secondary" onclick="clearTrxForm()"><i class="fas fa-eraser me-1"></i>Clear</button>
+        </div>
+      </div>
+
+      <div class="card p-3">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+          <h6 class="m-0">All Transactions</h6>
+          <div class="d-flex gap-2 flex-wrap">
+            <input type="text" class="form-control form-control-sm" id="trxSearch" placeholder="Search..." style="width:180px">
+            <button class="btn btn-sm btn-success" onclick="exportTrxExcel()"><i class="fas fa-file-excel me-1"></i>Export</button>
+            <button class="btn btn-sm btn-outline-primary" onclick="loadTransactions()"><i class="fas fa-sync"></i></button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table table-hover table-sm">
+            <thead><tr>
+              <th>Date</th>
+              <th>TRX #</th>
+              <th>Booking #</th>
+              <th>Customer</th>
+              <th>Store</th>
+              <th>Supplier</th>
+              <th class="text-end">Gross</th>
+              <th class="text-end">Discount</th>
+              <th class="text-end">Net</th>
+              <th>Logged By</th>
+              <th>Actions</th>
+            </tr></thead>
+            <tbody id="trxTableBody"></tbody>
+          </table>
+        </div>
+        <div class="d-flex justify-content-between align-items-center mt-2 flex-wrap gap-2">
+          <small class="text-muted" id="trxPageInfo"></small>
+          <div class="pagination" id="trxPagination"></div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 </div>
 
 <div class="toast-container" id="toastContainer"></div>
 <div class="spinner-overlay" id="spinner"><div class="spinner-border text-light"></div></div>
+<div class="scanner-modal" id="scannerModal">
+  <div class="scanner-box">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <h6 class="m-0"><i class="fas fa-barcode me-2"></i>Scan Barcode</h6>
+      <button class="btn-close" onclick="closeScanner()"></button>
+    </div>
+    <video class="scanner-video" id="scannerVideo" autoplay playsinline muted></video>
+    <div class="scanner-status" id="scannerStatus">Point camera at barcode...</div>
+    <div class="d-flex gap-2 mt-3">
+      <button class="btn btn-sm btn-outline-secondary flex-fill" onclick="switchCamera()"><i class="fas fa-sync me-1"></i>Switch Camera</button>
+      <button class="btn btn-sm btn-secondary flex-fill" onclick="closeScanner()">Cancel</button>
+    </div>
+  </div>
+</div>
 <div class="owner-badge">By Carl_M@17</div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
@@ -1068,13 +1328,334 @@ function renderCharts(data){
   });
 }
 
+// ===== BOOKING TRANSACTION =====
+let allTransactions = [];
+let trxCurrentPage = 1;
+let trxScanner = null;
+let trxCameraIndex = 0;
+let trxCameras = [];
+
+function todayISO(){
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+function calcNet(){
+  const g = parseFloat(document.getElementById('trx_Gross').value) || 0;
+  const d = parseFloat(document.getElementById('trx_Discount').value) || 0;
+  document.getElementById('trx_Net').value = (g - d).toFixed(2);
+}
+
+async function lookupBooking(){
+  const bn = document.getElementById('trx_Booking_No').value.trim();
+  if (!bn){ toast('Enter or scan a Booking#', 'error'); return; }
+  showSpinner(true);
+  try {
+    const b = await api('GET', '/api/booking-lookup/' + encodeURIComponent(bn));
+    document.getElementById('trx_Name').value = b.Customer_Name;
+    document.getElementById('trx_Customer_No').value = b.Customer_No;
+    document.getElementById('trx_Region').value = b.Region;
+    document.getElementById('trx_Area').value = b.Area;
+    document.getElementById('trx_Store_Delivery').value = b.Store_Delivery;
+    document.getElementById('trx_Dept').value = b.Dept;
+    document.getElementById('trx_Supplier').value = b.Supplier;
+    document.getElementById('trx_Deals').value = b.Deals;
+    toast('Booking found: ' + b.Customer_Name);
+  } catch(e){
+    toast(e.message, 'error');
+    // Clear auto-filled fields if lookup failed
+    ['trx_Name','trx_Customer_No','trx_Region','trx_Area','trx_Store_Delivery','trx_Dept','trx_Supplier','trx_Deals'].forEach(id => document.getElementById(id).value = '');
+  } finally { showSpinner(false); }
+}
+
+document.getElementById('trx_Booking_No').addEventListener('keydown', e => {
+  if (e.key === 'Enter'){ e.preventDefault(); lookupBooking(); }
+});
+
+function clearTrxForm(){
+  ['trx_Booking_No','trx_Date_Transacted','trx_TRX_Number','trx_Name','trx_Customer_No','trx_Region','trx_Area','trx_Store_Delivery','trx_Dept','trx_Supplier','trx_Deals','trx_Gross','trx_Discount'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('trx_Net').value = '0.00';
+  document.getElementById('trx_Date_Transacted').value = todayISO();
+  document.getElementById('trxEditRowIndex').value = '';
+  document.getElementById('trxFormTitle').textContent = 'Add Transaction';
+  document.getElementById('trxBtnSave').innerHTML = '<i class="fas fa-save me-1"></i>Save';
+}
+
+async function saveTransaction(){
+  const btn = document.getElementById('trxBtnSave');
+  const dateInput = document.getElementById('trx_Date_Transacted').value;
+  // Convert YYYY-MM-DD to M/D/YYYY to match sheet format
+  let dateOut = '';
+  if (dateInput){
+    const [y,m,d] = dateInput.split('-').map(Number);
+    dateOut = m + '/' + d + '/' + y;
+  }
+
+  const payload = {
+    Date_Transacted: dateOut,
+    Customer_No: document.getElementById('trx_Customer_No').value,
+    Name: document.getElementById('trx_Name').value,
+    Region: document.getElementById('trx_Region').value,
+    Area: document.getElementById('trx_Area').value,
+    Store_Delivery: document.getElementById('trx_Store_Delivery').value,
+    Dept: document.getElementById('trx_Dept').value,
+    Supplier: document.getElementById('trx_Supplier').value,
+    Booking_No: document.getElementById('trx_Booking_No').value,
+    Deals: document.getElementById('trx_Deals').value,
+    Transacted_Amount_Gross: document.getElementById('trx_Gross').value,
+    Transacted_Discount_Net: document.getElementById('trx_Discount').value || '0',
+    Transacted_Amount_Net: document.getElementById('trx_Net').value,
+    TRX_Number: document.getElementById('trx_TRX_Number').value,
+  };
+
+  if (!payload.Booking_No){ toast('Booking# is required', 'error'); return; }
+  if (!payload.Date_Transacted){ toast('Date is required', 'error'); return; }
+  if (!payload.TRX_Number){ toast('TRX Number is required', 'error'); return; }
+  if (!payload.Customer_No){ toast('Look up the Booking# first', 'error'); return; }
+  if (!payload.Transacted_Amount_Gross){ toast('Gross amount is required', 'error'); return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+  showSpinner(true);
+  try {
+    const editIdx = document.getElementById('trxEditRowIndex').value;
+    if (editIdx){
+      await api('PUT', '/api/transactions/' + editIdx, payload);
+      toast('Transaction updated');
+    } else {
+      await api('POST', '/api/transactions', payload);
+      toast('Transaction saved');
+    }
+    clearTrxForm();
+    await loadTransactions();
+  } catch(e){ toast(e.message, 'error'); }
+  finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-save me-1"></i>Save';
+    showSpinner(false);
+  }
+}
+
+async function loadTransactions(){
+  showSpinner(true);
+  try {
+    allTransactions = await api('GET', '/api/transactions');
+    renderTrxTable();
+  } catch(e){ toast(e.message, 'error'); }
+  finally { showSpinner(false); }
+}
+
+function getTrxFiltered(){
+  const q = document.getElementById('trxSearch').value.toLowerCase();
+  let data = allTransactions;
+  if (q) data = data.filter(t => Object.values(t).some(v => String(v).toLowerCase().includes(q)));
+  return [...data].sort((a,b) => {
+    const da = parseMDY(a.Date_Transacted) || 0;
+    const db = parseMDY(b.Date_Transacted) || 0;
+    return db - da;
+  });
+}
+
+function renderTrxTable(){
+  const data = getTrxFiltered();
+  const totalPages = Math.max(1, Math.ceil(data.length / PAGE_SIZE));
+  if (trxCurrentPage > totalPages) trxCurrentPage = totalPages;
+  const start = (trxCurrentPage - 1) * PAGE_SIZE;
+  const pageData = data.slice(start, start + PAGE_SIZE);
+
+  const tbody = document.getElementById('trxTableBody');
+  if (!pageData.length){
+    tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted py-4">No transactions found</td></tr>';
+  } else {
+    tbody.innerHTML = pageData.map(t => {
+      const isOwner = currentUser && t.Logged_By.toLowerCase() === currentUser.username;
+      const isAdmin = currentUser && currentUser.role === 'admin';
+      const canEdit = isAdmin || isOwner;
+      const canDelete = isAdmin;
+      const editTip = t.Last_Edited_By ? \` title="Last edited by \${t.Last_Edited_By}"\` : '';
+      return \`
+      <tr>
+        <td>\${t.Date_Transacted}</td>
+        <td><strong>\${t.TRX_Number}</strong></td>
+        <td>\${t.Booking_No}</td>
+        <td>\${t.Name}</td>
+        <td>\${t.Store_Delivery}</td>
+        <td>\${t.Supplier}</td>
+        <td class="text-end">\${fmtPeso(t.Transacted_Amount_Gross)}</td>
+        <td class="text-end">\${fmtPeso(t.Transacted_Discount_Net)}</td>
+        <td class="text-end"><strong>\${fmtPeso(t.Transacted_Amount_Net)}</strong></td>
+        <td\${editTip}>\${t.Logged_By}\${t.Last_Edited_By ? ' <i class="fas fa-pen text-muted" style="font-size:10px"></i>' : ''}</td>
+        <td class="text-nowrap">
+          \${canEdit ? \`<button class="btn btn-sm btn-outline-primary action-btn" onclick="editTransaction(\${t.rowIndex})"><i class="fas fa-edit"></i></button>\` : ''}
+          \${canDelete ? \`<button class="btn btn-sm btn-outline-danger action-btn" onclick="deleteTransaction(\${t.rowIndex}, '\${t.TRX_Number}')"><i class="fas fa-trash"></i></button>\` : ''}
+          \${!canEdit && !canDelete ? '<span class="text-muted small">—</span>' : ''}
+        </td>
+      </tr>\`;
+    }).join('');
+  }
+
+  document.getElementById('trxPageInfo').textContent = \`Showing \${start+1}-\${Math.min(start+PAGE_SIZE, data.length)} of \${data.length}\`;
+
+  const pag = document.getElementById('trxPagination');
+  let html = \`<button \${trxCurrentPage===1?'disabled':''} onclick="goTrxPage(\${trxCurrentPage-1})">‹</button>\`;
+  for (let i=1; i<=totalPages; i++){
+    if (i===1 || i===totalPages || Math.abs(i-trxCurrentPage)<=1){
+      html += \`<button class="\${i===trxCurrentPage?'active':''}" onclick="goTrxPage(\${i})">\${i}</button>\`;
+    } else if (Math.abs(i-trxCurrentPage)===2){
+      html += '<span style="padding:0 4px">…</span>';
+    }
+  }
+  html += \`<button \${trxCurrentPage===totalPages?'disabled':''} onclick="goTrxPage(\${trxCurrentPage+1})">›</button>\`;
+  pag.innerHTML = html;
+}
+
+function goTrxPage(p){ trxCurrentPage = p; renderTrxTable(); }
+
+document.getElementById('trxSearch').addEventListener('input', () => { trxCurrentPage = 1; renderTrxTable(); });
+
+function editTransaction(rowIndex){
+  const t = allTransactions.find(x => x.rowIndex === rowIndex);
+  if (!t) return;
+  document.getElementById('trxEditRowIndex').value = t.rowIndex;
+  document.getElementById('trx_Booking_No').value = t.Booking_No;
+  // Convert M/D/YYYY back to YYYY-MM-DD for input[type=date]
+  if (t.Date_Transacted){
+    const [m,d,y] = t.Date_Transacted.split('/');
+    document.getElementById('trx_Date_Transacted').value = y + '-' + String(m).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+  }
+  document.getElementById('trx_TRX_Number').value = t.TRX_Number;
+  document.getElementById('trx_Name').value = t.Name;
+  document.getElementById('trx_Customer_No').value = t.Customer_No;
+  document.getElementById('trx_Region').value = t.Region;
+  document.getElementById('trx_Area').value = t.Area;
+  document.getElementById('trx_Store_Delivery').value = t.Store_Delivery;
+  document.getElementById('trx_Dept').value = t.Dept;
+  document.getElementById('trx_Supplier').value = t.Supplier;
+  document.getElementById('trx_Deals').value = t.Deals;
+  document.getElementById('trx_Gross').value = t.Transacted_Amount_Gross;
+  document.getElementById('trx_Discount').value = t.Transacted_Discount_Net;
+  calcNet();
+  document.getElementById('trxFormTitle').textContent = 'Edit Transaction ' + t.TRX_Number;
+  document.getElementById('trxBtnSave').innerHTML = '<i class="fas fa-save me-1"></i>Update';
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+async function deleteTransaction(rowIndex, trxNum){
+  if (!confirm('Delete transaction ' + trxNum + '? This cannot be undone.')) return;
+  showSpinner(true);
+  try {
+    await api('DELETE', '/api/transactions/' + rowIndex);
+    toast('Transaction deleted');
+    await loadTransactions();
+  } catch(e){ toast(e.message, 'error'); }
+  finally { showSpinner(false); }
+}
+
+function exportTrxExcel(){
+  const data = getTrxFiltered();
+  if (!data.length){ toast('No data to export', 'error'); return; }
+
+  const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net','TRX_Number'];
+  const fields = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net','TRX_Number'];
+  const rows = [headers, ...data.map(t => fields.map(f => {
+    if (['Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net'].includes(f)) return parseFloat(t[f]) || 0;
+    return t[f] || '';
+  }))];
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const headerStyle = {
+    fill: { patternType: 'solid', fgColor: { rgb: '006100' } },
+    font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 11 },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: {
+      top: { style: 'thin', color: { rgb: '000000' } },
+      bottom: { style: 'thin', color: { rgb: '000000' } },
+      left: { style: 'thin', color: { rgb: '000000' } },
+      right: { style: 'thin', color: { rgb: '000000' } }
+    }
+  };
+  for (let c = 0; c < headers.length; c++){
+    const addr = XLSX.utils.encode_cell({ r: 0, c });
+    if (ws[addr]) ws[addr].s = headerStyle;
+  }
+  ws['!cols'] = headers.map(h => ({ wch: Math.max(h.length + 2, 15) }));
+  for (let r = 1; r <= data.length; r++){
+    [10,11,12].forEach(c => {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (ws[addr]) ws[addr].z = '#,##0.00';
+    });
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'BookingTransaction');
+
+  const d = new Date();
+  const stamp = \`\${d.getFullYear()}-\${String(d.getMonth()+1).padStart(2,'0')}-\${String(d.getDate()).padStart(2,'0')}_\${String(d.getHours()).padStart(2,'0')}-\${String(d.getMinutes()).padStart(2,'0')}\`;
+  XLSX.writeFile(wb, \`BookingTransaction_\${stamp}.xlsx\`);
+  toast(\`Exported \${data.length} rows\`);
+}
+
+// ===== BARCODE SCANNER =====
+async function openScanner(){
+  document.getElementById('scannerModal').classList.add('show');
+  document.getElementById('scannerStatus').textContent = 'Starting camera...';
+  try {
+    if (!window.ZXing){ throw new Error('Scanner library failed to load'); }
+    trxScanner = new ZXing.BrowserMultiFormatReader();
+    const devices = await trxScanner.listVideoInputDevices();
+    if (!devices.length) throw new Error('No camera found');
+    trxCameras = devices;
+    // Prefer rear camera on phones
+    const rear = devices.findIndex(d => /back|rear|environment/i.test(d.label));
+    trxCameraIndex = rear >= 0 ? rear : devices.length - 1;
+    await startScanner();
+  } catch(e){
+    document.getElementById('scannerStatus').textContent = 'Error: ' + e.message;
+    toast(e.message, 'error');
+  }
+}
+
+async function startScanner(){
+  if (!trxScanner || !trxCameras.length) return;
+  const deviceId = trxCameras[trxCameraIndex].deviceId;
+  document.getElementById('scannerStatus').textContent = 'Point camera at barcode...';
+  try {
+    await trxScanner.decodeFromVideoDevice(deviceId, 'scannerVideo', (result, err) => {
+      if (result){
+        const code = result.getText();
+        document.getElementById('trx_Booking_No').value = code;
+        document.getElementById('scannerStatus').textContent = '✓ Scanned: ' + code;
+        closeScanner();
+        lookupBooking();
+      }
+    });
+  } catch(e){
+    document.getElementById('scannerStatus').textContent = 'Camera error: ' + e.message;
+  }
+}
+
+async function switchCamera(){
+  if (trxCameras.length < 2){ toast('Only one camera available', 'error'); return; }
+  trxCameraIndex = (trxCameraIndex + 1) % trxCameras.length;
+  if (trxScanner){ trxScanner.reset(); }
+  await startScanner();
+}
+
+function closeScanner(){
+  if (trxScanner){ try { trxScanner.reset(); } catch(e){} trxScanner = null; }
+  document.getElementById('scannerModal').classList.remove('show');
+}
+
 async function initApp(){
   document.getElementById('Date_Booked').value = todayStr();
+  document.getElementById('trx_Date_Transacted').value = todayISO();
   await loadLookups();
   await loadBookings();
+  await loadTransactions();
   // Auto-refresh every 30s for multi-user sync
   if (window._refreshInterval) clearInterval(window._refreshInterval);
-  window._refreshInterval = setInterval(loadBookings, 30000);
+  window._refreshInterval = setInterval(() => { loadBookings(); loadTransactions(); }, 30000);
 }
 
 // INIT — try auto-login if token exists
