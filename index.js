@@ -725,6 +725,7 @@ const HTML = `<!DOCTYPE html>
           <div class="col-md-4 col-sm-6"><label class="form-label">Dept</label><input type="text" class="form-control" id="trx_Dept" readonly></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Supplier</label><input type="text" class="form-control" id="trx_Supplier" readonly></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Deals</label><input type="text" class="form-control" id="trx_Deals" readonly></div>
+          <div class="col-md-4 col-sm-6"><label class="form-label">Total Booked Amount</label><input type="text" class="form-control" id="trx_Total_Booked" readonly></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Gross Amount <span class="required-mark">*</span></label><input type="number" step="0.01" class="form-control" id="trx_Gross" placeholder="0.00" oninput="calcNet()"></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Discount</label><input type="number" step="0.01" class="form-control" id="trx_Discount" placeholder="0.00" oninput="calcNet()"></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Net Amount <span class="text-muted small">(auto)</span></label><input type="text" class="form-control calc-display" id="trx_Net" readonly value="0.00"></div>
@@ -830,7 +831,14 @@ function todayStr(){
   const d = new Date();
   return (d.getMonth()+1) + '/' + d.getDate() + '/' + d.getFullYear();
 }
-function fmtPeso(n){ return '₱' + Number(n||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtPeso(n){
+  // Handle values that may come back as "1,234.56" string from Google Sheets
+  let num;
+  if (typeof n === 'number') num = n;
+  else if (n === null || n === undefined || n === '') num = 0;
+  else num = parseFloat(String(n).replace(/[^0-9.\-]/g, '')) || 0;
+  return '₱' + num.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
 function parseMDY(s){ if(!s) return null; const [m,d,y]=s.split('/').map(Number); return new Date(y,m-1,d); }
 
 async function api(method, url, body){
@@ -1360,11 +1368,12 @@ async function lookupBooking(){
     document.getElementById('trx_Dept').value = b.Dept;
     document.getElementById('trx_Supplier').value = b.Supplier;
     document.getElementById('trx_Deals').value = b.Deals;
+    document.getElementById('trx_Total_Booked').value = fmtPeso(b.Total_Booked_Amount);
     toast('Booking found: ' + b.Customer_Name);
   } catch(e){
     toast(e.message, 'error');
     // Clear auto-filled fields if lookup failed
-    ['trx_Name','trx_Customer_No','trx_Region','trx_Area','trx_Store_Delivery','trx_Dept','trx_Supplier','trx_Deals'].forEach(id => document.getElementById(id).value = '');
+    ['trx_Name','trx_Customer_No','trx_Region','trx_Area','trx_Store_Delivery','trx_Dept','trx_Supplier','trx_Deals','trx_Total_Booked'].forEach(id => document.getElementById(id).value = '');
   } finally { showSpinner(false); }
 }
 
@@ -1373,7 +1382,7 @@ document.getElementById('trx_Booking_No').addEventListener('keydown', e => {
 });
 
 function clearTrxForm(){
-  ['trx_Booking_No','trx_Date_Transacted','trx_TRX_Number','trx_Name','trx_Customer_No','trx_Region','trx_Area','trx_Store_Delivery','trx_Dept','trx_Supplier','trx_Deals','trx_Gross','trx_Discount'].forEach(id => {
+  ['trx_Booking_No','trx_Date_Transacted','trx_TRX_Number','trx_Name','trx_Customer_No','trx_Region','trx_Area','trx_Store_Delivery','trx_Dept','trx_Supplier','trx_Deals','trx_Total_Booked','trx_Gross','trx_Discount'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('trx_Net').value = '0.00';
@@ -1536,6 +1545,11 @@ function editTransaction(rowIndex){
   document.getElementById('trx_Deals').value = t.Deals;
   document.getElementById('trx_Gross').value = t.Transacted_Amount_Gross;
   document.getElementById('trx_Discount').value = t.Transacted_Discount_Net;
+  // Look up the original booking to show its Total_Booked_Amount (background, won't block)
+  document.getElementById('trx_Total_Booked').value = '...';
+  api('GET', '/api/booking-lookup/' + encodeURIComponent(t.Booking_No))
+    .then(b => { document.getElementById('trx_Total_Booked').value = fmtPeso(b.Total_Booked_Amount); })
+    .catch(() => { document.getElementById('trx_Total_Booked').value = ''; });
   calcNet();
   document.getElementById('trxFormTitle').textContent = 'Edit Transaction ' + t.TRX_Number;
   document.getElementById('trxBtnSave').innerHTML = '<i class="fas fa-save me-1"></i>Update';
