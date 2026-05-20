@@ -376,6 +376,7 @@ app.delete('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
         }],
       },
     });
+
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
@@ -493,6 +494,7 @@ app.post('/api/transactions', requireAuth, async (req, res) => {
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [row] },
     });
+
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
@@ -549,6 +551,7 @@ app.put('/api/transactions/:rowIndex', requireAuth, async (req, res) => {
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [row] },
     });
+
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
@@ -576,7 +579,68 @@ app.delete('/api/transactions/:rowIndex', requireAuth, async (req, res) => {
         }],
       },
     });
+
     res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== BOOKING UPDATE (joins Booking + Transactions) =====
+function num(v) {
+  if (typeof v === 'number') return v;
+  if (v === null || v === undefined || v === '') return 0;
+  return parseFloat(String(v).replace(/[^0-9.\-]/g, '')) || 0;
+}
+
+// Build joined report data: every booking + aggregated transaction totals
+async function computeBookingUpdate() {
+  const [bookings, transactions] = await Promise.all([readBookings(), readTransactions()]);
+
+  // Aggregate transactions per Booking#
+  const trxByBooking = {};
+  for (const t of transactions) {
+    const key = String(t.Booking_No || '').trim().toLowerCase();
+    if (!key) continue;
+    if (!trxByBooking[key]) trxByBooking[key] = { net: 0, disc: 0, gross: 0, latestDate: '' };
+    trxByBooking[key].net += num(t.Transacted_Amount_Net);
+    trxByBooking[key].disc += num(t.Transacted_Discount_Net);
+    trxByBooking[key].gross += num(t.Transacted_Amount_Gross);
+    if (!trxByBooking[key].latestDate || t.Date_Transacted) {
+      trxByBooking[key].latestDate = t.Date_Transacted || trxByBooking[key].latestDate;
+    }
+  }
+
+  return bookings.map(b => {
+    const key = String(b.Booking_No || '').trim().toLowerCase();
+    const t = trxByBooking[key] || { net: 0, disc: 0, gross: 0, latestDate: '' };
+    const booked = num(b.Total_Booked_Amount);
+    const balance = booked - t.net;
+    const pct = booked > 0 ? (t.net / booked) : 0;
+    return {
+      Date_Transacted: t.latestDate || '',
+      Customer_No: b.Customer_No,
+      Name: b.Customer_Name,
+      Region: b.Region,
+      Area: b.Area,
+      Store_Delivery: b.Store_Delivery,
+      Dept: b.Dept,
+      Supplier: b.Supplier,
+      Booking_No: b.Booking_No,
+      Deals: b.Deals,
+      Total_Booked_Amount: booked,
+      Transacted_Amount_Net: t.net,
+      Transacted_Discount_Net: t.disc,
+      Transacted_Amount_Gross: t.gross,
+      Balance_Amount_Tobe_Transacted: balance,
+      Pct_Transacted: pct,
+    };
+  });
+}
+
+// API: get live read-only report data (no sheet write)
+app.get('/api/booking-update', requireAuth, async (req, res) => {
+  try {
+    const data = await computeBookingUpdate();
+    res.json(data);
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
@@ -678,6 +742,7 @@ const HTML = `<!DOCTYPE html>
     <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#summaryTab">📊 Booking Summary</a></li>
     <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#addTab">➕ Add Booking</a></li>
     <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#trxTab">📦 Booking Transaction</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#updateTab" onclick="loadBookingUpdate()">📈 Booking Update</a></li>
   </ul>
 
   <div class="tab-content">
@@ -847,6 +912,52 @@ const HTML = `<!DOCTYPE html>
         <div class="d-flex justify-content-between align-items-center mt-2 flex-wrap gap-2">
           <small class="text-muted" id="trxPageInfo"></small>
           <div class="pagination" id="trxPagination"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BOOKING UPDATE TAB -->
+    <div class="tab-pane fade" id="updateTab">
+      <div class="row g-3 mb-3">
+        <div class="col-6 col-md-3"><div class="card stat-card"><div class="label">Total Booked</div><div class="value" id="updStatBooked">₱0</div></div></div>
+        <div class="col-6 col-md-3"><div class="card stat-card"><div class="label">Transacted (Net)</div><div class="value" id="updStatNet">₱0</div></div></div>
+        <div class="col-6 col-md-3"><div class="card stat-card"><div class="label">Balance</div><div class="value" id="updStatBalance">₱0</div></div></div>
+        <div class="col-6 col-md-3"><div class="card stat-card"><div class="label">% Transacted</div><div class="value" id="updStatPct">0%</div></div></div>
+      </div>
+
+      <div class="card p-3">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+          <h6 class="m-0">Booking Update Report <span class="text-muted small">(read-only)</span></h6>
+          <div class="d-flex gap-2 flex-wrap">
+            <input type="text" class="form-control form-control-sm" id="updSearch" placeholder="Search..." style="width:180px">
+            <button class="btn btn-sm btn-success" onclick="exportUpdateExcel()"><i class="fas fa-file-excel me-1"></i>Export Excel</button>
+            <button class="btn btn-sm btn-outline-primary" onclick="loadBookingUpdate()" title="Refresh"><i class="fas fa-sync"></i></button>
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6 col-md-3"><label class="form-label">Area</label><select class="form-select form-select-sm" id="updFilterArea"><option value="">All Areas</option></select></div>
+          <div class="col-6 col-md-3"><label class="form-label">Store</label><select class="form-select form-select-sm" id="updFilterStore"><option value="">All Stores</option></select></div>
+          <div class="col-12 col-md-2 d-flex align-items-end"><button class="btn btn-sm btn-outline-secondary w-100" onclick="clearUpdFilters()"><i class="fas fa-times me-1"></i>Clear</button></div>
+        </div>
+        <div class="table-wrap">
+          <table class="table table-hover table-sm">
+            <thead><tr>
+              <th>Date</th>
+              <th>Booking #</th>
+              <th>Customer</th>
+              <th>Store</th>
+              <th>Supplier</th>
+              <th class="text-end">Booked</th>
+              <th class="text-end">Net Trx</th>
+              <th class="text-end">Balance</th>
+              <th class="text-end">% Trx</th>
+            </tr></thead>
+            <tbody id="updTableBody"></tbody>
+          </table>
+        </div>
+        <div class="d-flex justify-content-between align-items-center mt-2 flex-wrap gap-2">
+          <small class="text-muted" id="updPageInfo"></small>
+          <div class="pagination" id="updPagination"></div>
         </div>
       </div>
     </div>
@@ -1754,6 +1865,169 @@ async function switchCamera(){
 function closeScanner(){
   if (trxScanner){ try { trxScanner.reset(); } catch(e){} trxScanner = null; }
   document.getElementById('scannerModal').classList.remove('show');
+}
+
+// ===== BOOKING UPDATE (read-only report) =====
+let allUpdate = [];
+let updCurrentPage = 1;
+
+async function loadBookingUpdate(){
+  showSpinner(true);
+  try {
+    allUpdate = await api('GET', '/api/booking-update');
+    populateUpdFilters();
+    renderUpdate();
+  } catch(e){ toast(e.message, 'error'); }
+  finally { showSpinner(false); }
+}
+
+function populateUpdFilters(){
+  const areas = [...new Set(allUpdate.map(r => r.Area).filter(Boolean))].sort();
+  const stores = [...new Set(allUpdate.map(r => r.Store_Delivery).filter(Boolean))].sort();
+  const aSel = document.getElementById('updFilterArea');
+  const sSel = document.getElementById('updFilterStore');
+  const curA = aSel.value, curS = sSel.value;
+  aSel.innerHTML = '<option value="">All Areas</option>' + areas.map(a => '<option>'+a+'</option>').join('');
+  sSel.innerHTML = '<option value="">All Stores</option>' + stores.map(s => '<option>'+s+'</option>').join('');
+  aSel.value = curA; sSel.value = curS;
+}
+
+function getUpdFiltered(){
+  const q = document.getElementById('updSearch').value.toLowerCase();
+  const fA = document.getElementById('updFilterArea').value;
+  const fS = document.getElementById('updFilterStore').value;
+  let data = allUpdate;
+  if (fA) data = data.filter(r => r.Area === fA);
+  if (fS) data = data.filter(r => r.Store_Delivery === fS);
+  if (q) data = data.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)));
+  return data;
+}
+
+function clearUpdFilters(){
+  document.getElementById('updFilterArea').value = '';
+  document.getElementById('updFilterStore').value = '';
+  document.getElementById('updSearch').value = '';
+  updCurrentPage = 1;
+  renderUpdate();
+}
+
+function fmtPct(v){
+  const n = num(v) * 100;
+  return n.toFixed(1) + '%';
+}
+function num(v){
+  if (typeof v === 'number') return v;
+  if (!v) return 0;
+  return parseFloat(String(v).replace(/[^0-9.\-]/g, '')) || 0;
+}
+
+function renderUpdate(){
+  const data = getUpdFiltered();
+
+  // Stat cards
+  const booked = data.reduce((s,r) => s + num(r.Total_Booked_Amount), 0);
+  const net = data.reduce((s,r) => s + num(r.Transacted_Amount_Net), 0);
+  const balance = booked - net;
+  const pct = booked > 0 ? (net / booked * 100) : 0;
+  document.getElementById('updStatBooked').textContent = fmtPeso(booked);
+  document.getElementById('updStatNet').textContent = fmtPeso(net);
+  document.getElementById('updStatBalance').textContent = fmtPeso(balance);
+  document.getElementById('updStatPct').textContent = pct.toFixed(1) + '%';
+
+  // Table pagination
+  const totalPages = Math.max(1, Math.ceil(data.length / PAGE_SIZE));
+  if (updCurrentPage > totalPages) updCurrentPage = totalPages;
+  const start = (updCurrentPage - 1) * PAGE_SIZE;
+  const pageData = data.slice(start, start + PAGE_SIZE);
+
+  const tbody = document.getElementById('updTableBody');
+  if (!pageData.length){
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">No data</td></tr>';
+  } else {
+    tbody.innerHTML = pageData.map(r => {
+      const pctVal = num(r.Pct_Transacted) * 100;
+      const pctColor = pctVal >= 100 ? 'var(--success)' : pctVal >= 50 ? 'var(--primary)' : 'var(--danger)';
+      return \`
+        <tr>
+          <td>\${r.Date_Transacted || '—'}</td>
+          <td><strong>\${r.Booking_No || '—'}</strong></td>
+          <td>\${r.Name}</td>
+          <td>\${r.Store_Delivery}</td>
+          <td>\${r.Supplier}</td>
+          <td class="text-end">\${fmtPeso(r.Total_Booked_Amount)}</td>
+          <td class="text-end">\${fmtPeso(r.Transacted_Amount_Net)}</td>
+          <td class="text-end">\${fmtPeso(r.Balance_Amount_Tobe_Transacted)}</td>
+          <td class="text-end" style="color:\${pctColor};font-weight:600">\${pctVal.toFixed(1)}%</td>
+        </tr>
+      \`;
+    }).join('');
+  }
+
+  document.getElementById('updPageInfo').textContent = \`Showing \${data.length ? start+1 : 0}-\${Math.min(start+PAGE_SIZE, data.length)} of \${data.length}\`;
+
+  const pag = document.getElementById('updPagination');
+  let html = \`<button \${updCurrentPage===1?'disabled':''} onclick="goUpdPage(\${updCurrentPage-1})">‹</button>\`;
+  for (let i=1; i<=totalPages; i++){
+    if (i===1 || i===totalPages || Math.abs(i-updCurrentPage)<=1){
+      html += \`<button class="\${i===updCurrentPage?'active':''}" onclick="goUpdPage(\${i})">\${i}</button>\`;
+    } else if (Math.abs(i-updCurrentPage)===2){
+      html += '<span style="padding:0 4px">…</span>';
+    }
+  }
+  html += \`<button \${updCurrentPage===totalPages?'disabled':''} onclick="goUpdPage(\${updCurrentPage+1})">›</button>\`;
+  pag.innerHTML = html;
+}
+
+function goUpdPage(p){ updCurrentPage = p; renderUpdate(); }
+
+document.getElementById('updSearch').addEventListener('input', () => { updCurrentPage = 1; renderUpdate(); });
+document.getElementById('updFilterArea').addEventListener('change', () => { updCurrentPage = 1; renderUpdate(); });
+document.getElementById('updFilterStore').addEventListener('change', () => { updCurrentPage = 1; renderUpdate(); });
+
+function exportUpdateExcel(){
+  const data = getUpdFiltered();
+  if (!data.length){ toast('No data to export', 'error'); return; }
+
+  const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','% Transacted'];
+  const fields = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','Pct_Transacted'];
+  const rows = [headers, ...data.map(r => fields.map(f => {
+    if (['Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','Pct_Transacted'].includes(f)) return num(r[f]);
+    return r[f] || '';
+  }))];
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const headerStyle = {
+    fill: { patternType: 'solid', fgColor: { rgb: '006100' } },
+    font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 11 },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: {
+      top: { style: 'thin', color: { rgb: '000000' } },
+      bottom: { style: 'thin', color: { rgb: '000000' } },
+      left: { style: 'thin', color: { rgb: '000000' } },
+      right: { style: 'thin', color: { rgb: '000000' } }
+    }
+  };
+  for (let c = 0; c < headers.length; c++){
+    const addr = XLSX.utils.encode_cell({ r: 0, c });
+    if (ws[addr]) ws[addr].s = headerStyle;
+  }
+  ws['!cols'] = headers.map(h => ({ wch: Math.max(h.length + 2, 15) }));
+  // Currency format for cols K-O (10-14), % format for col P (15)
+  for (let r = 1; r <= data.length; r++){
+    [10,11,12,13,14].forEach(c => {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (ws[addr]) ws[addr].z = '#,##0.00';
+    });
+    const pAddr = XLSX.utils.encode_cell({ r, c: 15 });
+    if (ws[pAddr]) ws[pAddr].z = '0.0%';
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'BookingUpdate');
+
+  const d = new Date();
+  const stamp = \`\${d.getFullYear()}-\${String(d.getMonth()+1).padStart(2,'0')}-\${String(d.getDate()).padStart(2,'0')}_\${String(d.getHours()).padStart(2,'0')}-\${String(d.getMinutes()).padStart(2,'0')}\`;
+  XLSX.writeFile(wb, \`BookingUpdate_\${stamp}.xlsx\`);
+  toast(\`Exported \${data.length} rows\`);
 }
 
 async function initApp(){
