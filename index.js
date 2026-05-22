@@ -925,6 +925,31 @@ const HTML = `<!DOCTYPE html>
         <div class="col-6 col-md-3"><div class="card stat-card"><div class="label">% Transacted</div><div class="value" id="updStatPct">0%</div></div></div>
       </div>
 
+      <!-- PERFORMANCE BREAKDOWN -->
+      <div class="card p-3 mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+          <h6 class="m-0">Performance Breakdown</h6>
+          <ul class="nav nav-pills" id="perfTabs">
+            <li class="nav-item"><a class="nav-link active" data-perf="Area" href="#" onclick="event.preventDefault();setPerf('Area')">By Area</a></li>
+            <li class="nav-item"><a class="nav-link" data-perf="Store_Delivery" href="#" onclick="event.preventDefault();setPerf('Store_Delivery')">By Store</a></li>
+            <li class="nav-item"><a class="nav-link" data-perf="Supplier" href="#" onclick="event.preventDefault();setPerf('Supplier')">By Supplier</a></li>
+          </ul>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <thead><tr>
+              <th id="perfGroupCol">Area</th>
+              <th class="text-end">Bookings</th>
+              <th class="text-end">Booked</th>
+              <th class="text-end">Transacted (Net)</th>
+              <th class="text-end">Balance</th>
+              <th class="text-end" style="min-width:160px">% Transacted</th>
+            </tr></thead>
+            <tbody id="perfBody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card p-3">
         <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
           <h6 class="m-0">Booking Update Report <span class="text-muted small">(read-only)</span></h6>
@@ -1867,6 +1892,62 @@ function closeScanner(){
   document.getElementById('scannerModal').classList.remove('show');
 }
 
+let currentPerf = 'Area';
+
+function setPerf(field){
+  currentPerf = field;
+  document.querySelectorAll('#perfTabs .nav-link').forEach(a => {
+    a.classList.toggle('active', a.dataset.perf === field);
+  });
+  const labels = { Area: 'Area', Store_Delivery: 'Store', Supplier: 'Supplier' };
+  document.getElementById('perfGroupCol').textContent = labels[field] || field;
+  renderPerformance();
+}
+
+function renderPerformance(){
+  const data = getUpdFiltered();
+  const groups = {};
+  data.forEach(r => {
+    const key = r[currentPerf] || '(blank)';
+    if (!groups[key]) groups[key] = { count: 0, booked: 0, net: 0 };
+    groups[key].count++;
+    groups[key].booked += num(r.Total_Booked_Amount);
+    groups[key].net += num(r.Transacted_Amount_Net);
+  });
+
+  const rows = Object.entries(groups)
+    .map(([k, v]) => ({ key: k, ...v, balance: v.booked - v.net, pct: v.booked > 0 ? (v.net / v.booked * 100) : 0 }))
+    .sort((a, b) => b.booked - a.booked);
+
+  const tbody = document.getElementById('perfBody');
+  if (!rows.length){
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">No data</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(r => {
+    const pctCapped = Math.min(r.pct, 100);
+    const pctColor = r.pct >= 100 ? 'var(--success)' : r.pct >= 50 ? 'var(--primary)' : 'var(--danger)';
+    return \`
+      <tr>
+        <td><strong>\${r.key}</strong></td>
+        <td class="text-end">\${r.count}</td>
+        <td class="text-end">\${fmtPeso(r.booked)}</td>
+        <td class="text-end">\${fmtPeso(r.net)}</td>
+        <td class="text-end">\${fmtPeso(r.balance)}</td>
+        <td class="text-end">
+          <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+            <div style="flex:1;max-width:100px;height:8px;background:var(--border);border-radius:4px;overflow:hidden">
+              <div style="height:100%;width:\${pctCapped}%;background:\${pctColor};transition:width 0.3s"></div>
+            </div>
+            <span style="color:\${pctColor};font-weight:600;min-width:50px">\${r.pct.toFixed(1)}%</span>
+          </div>
+        </td>
+      </tr>
+    \`;
+  }).join('');
+}
+
 // ===== BOOKING UPDATE (read-only report) =====
 let allUpdate = [];
 let updCurrentPage = 1;
@@ -1933,6 +2014,9 @@ function renderUpdate(){
   document.getElementById('updStatNet').textContent = fmtPeso(net);
   document.getElementById('updStatBalance').textContent = fmtPeso(balance);
   document.getElementById('updStatPct').textContent = pct.toFixed(1) + '%';
+
+  // Render performance breakdown alongside main report
+  renderPerformance();
 
   // Table pagination
   const totalPages = Math.max(1, Math.ceil(data.length / PAGE_SIZE));
