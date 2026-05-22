@@ -933,17 +933,18 @@ const HTML = `<!DOCTYPE html>
             <li class="nav-item"><a class="nav-link active" data-perf="Area" href="#" onclick="event.preventDefault();setPerf('Area')">By Area</a></li>
             <li class="nav-item"><a class="nav-link" data-perf="Store_Delivery" href="#" onclick="event.preventDefault();setPerf('Store_Delivery')">By Store</a></li>
             <li class="nav-item"><a class="nav-link" data-perf="Supplier" href="#" onclick="event.preventDefault();setPerf('Supplier')">By Supplier</a></li>
+            <li class="nav-item"><a class="nav-link" data-perf="Name" href="#" onclick="event.preventDefault();setPerf('Name')">By Customer</a></li>
           </ul>
         </div>
         <div class="table-responsive">
           <table class="table table-sm">
             <thead><tr>
-              <th id="perfGroupCol">Area</th>
-              <th class="text-end">Bookings</th>
-              <th class="text-end">Booked</th>
-              <th class="text-end">Transacted (Net)</th>
-              <th class="text-end">Balance</th>
-              <th class="text-end" style="min-width:160px">% Transacted</th>
+              <th id="perfGroupCol" class="perf-sort" data-perf-sort="key" style="cursor:pointer;user-select:none">Area ⇅</th>
+              <th class="text-end perf-sort" data-perf-sort="count" style="cursor:pointer;user-select:none">Bookings ⇅</th>
+              <th class="text-end perf-sort" data-perf-sort="booked" style="cursor:pointer;user-select:none">Booked ⇅</th>
+              <th class="text-end perf-sort" data-perf-sort="net" style="cursor:pointer;user-select:none">Transacted (Net) ⇅</th>
+              <th class="text-end perf-sort" data-perf-sort="balance" style="cursor:pointer;user-select:none">Balance ⇅</th>
+              <th class="text-end perf-sort" data-perf-sort="pct" style="cursor:pointer;user-select:none;min-width:160px">% Transacted ⇅</th>
             </tr></thead>
             <tbody id="perfBody"></tbody>
           </table>
@@ -1893,14 +1894,16 @@ function closeScanner(){
 }
 
 let currentPerf = 'Area';
+let perfSortField = 'booked';
+let perfSortAsc = false;
 
 function setPerf(field){
   currentPerf = field;
   document.querySelectorAll('#perfTabs .nav-link').forEach(a => {
     a.classList.toggle('active', a.dataset.perf === field);
   });
-  const labels = { Area: 'Area', Store_Delivery: 'Store', Supplier: 'Supplier' };
-  document.getElementById('perfGroupCol').textContent = labels[field] || field;
+  const labels = { Area: 'Area', Store_Delivery: 'Store', Supplier: 'Supplier', Name: 'Customer' };
+  document.getElementById('perfGroupCol').textContent = (labels[field] || field) + ' ⇅';
   renderPerformance();
 }
 
@@ -1915,9 +1918,17 @@ function renderPerformance(){
     groups[key].net += num(r.Transacted_Amount_Net);
   });
 
-  const rows = Object.entries(groups)
-    .map(([k, v]) => ({ key: k, ...v, balance: v.booked - v.net, pct: v.booked > 0 ? (v.net / v.booked * 100) : 0 }))
-    .sort((a, b) => b.booked - a.booked);
+  let rows = Object.entries(groups)
+    .map(([k, v]) => ({ key: k, ...v, balance: v.booked - v.net, pct: v.booked > 0 ? (v.net / v.booked * 100) : 0 }));
+
+  // Sort by current sort field
+  rows.sort((a, b) => {
+    let va = a[perfSortField], vb = b[perfSortField];
+    if (typeof va === 'string'){ va = va.toLowerCase(); vb = String(vb).toLowerCase(); }
+    if (va < vb) return perfSortAsc ? -1 : 1;
+    if (va > vb) return perfSortAsc ? 1 : -1;
+    return 0;
+  });
 
   const tbody = document.getElementById('perfBody');
   if (!rows.length){
@@ -1947,6 +1958,16 @@ function renderPerformance(){
     \`;
   }).join('');
 }
+
+// Header click → sort toggle
+document.querySelectorAll('.perf-sort').forEach(th => {
+  th.addEventListener('click', () => {
+    const f = th.dataset.perfSort;
+    if (perfSortField === f) perfSortAsc = !perfSortAsc;
+    else { perfSortField = f; perfSortAsc = f === 'key'; }  // strings default asc, numbers default desc
+    renderPerformance();
+  });
+});
 
 // ===== BOOKING UPDATE (read-only report) =====
 let allUpdate = [];
