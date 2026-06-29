@@ -934,6 +934,7 @@ const HTML = `<!DOCTYPE html>
             <li class="nav-item"><a class="nav-link" data-perf="Store_Delivery" href="#" onclick="event.preventDefault();setPerf('Store_Delivery')">By Store</a></li>
             <li class="nav-item"><a class="nav-link" data-perf="Supplier" href="#" onclick="event.preventDefault();setPerf('Supplier')">By Supplier</a></li>
             <li class="nav-item"><a class="nav-link" data-perf="Name" href="#" onclick="event.preventDefault();setPerf('Name')">By Customer</a></li>
+            <li class="nav-item"><a class="nav-link" data-perf="Dept" href="#" onclick="event.preventDefault();setPerf('Dept')">By Dept</a></li>
           </ul>
         </div>
         <div class="table-responsive">
@@ -1902,7 +1903,7 @@ function setPerf(field){
   document.querySelectorAll('#perfTabs .nav-link').forEach(a => {
     a.classList.toggle('active', a.dataset.perf === field);
   });
-  const labels = { Area: 'Area', Store_Delivery: 'Store', Supplier: 'Supplier', Name: 'Customer' };
+  const labels = { Area: 'Area', Store_Delivery: 'Store', Supplier: 'Supplier', Name: 'Customer', Dept: 'Dept' };
   document.getElementById('perfGroupCol').textContent = (labels[field] || field) + ' ⇅';
   renderPerformance();
 }
