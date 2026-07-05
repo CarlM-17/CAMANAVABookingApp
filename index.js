@@ -4,7 +4,8 @@
 // Deploy on Railway
 
 const express = require('express');
-const { google } = require('googleapis');
+const https = require('https');
+const crypto = require('crypto');
 const app = express();
 
 app.use(express.json());
@@ -20,13 +21,106 @@ const STORE_SHEET = 'ListOfStore';
 const SUPPLIER_SHEET = 'Supplier';
 const TRX_SHEET = 'BookingTransaction';
 
-const auth = new google.auth.JWT(
-  SERVICE_ACCOUNT_EMAIL,
-  null,
-  PRIVATE_KEY,
-  ['https://www.googleapis.com/auth/spreadsheets']
-);
-const sheets = google.sheets({ version: 'v4', auth });
+// ===== NATIVE GOOGLE AUTH (bypasses gaxios/undici "Premature close" bug) =====
+let tokenCache = { token: null, expiresAt: 0 };
+
+function httpsRequest(opts, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(opts, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => req.destroy(new Error('Request timeout after 30s')));
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function getAccessToken() {
+  if (tokenCache.token && tokenCache.expiresAt > Date.now() + 60000) return tokenCache.token;
+  if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY) throw new Error('Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY');
+
+  const now = Math.floor(Date.now() / 1000);
+  const b64url = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const claims = {
+    iss: SERVICE_ACCOUNT_EMAIL,
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    aud: 'https://oauth2.googleapis.com/token',
+    exp: now + 3600, iat: now
+  };
+  const signingInput = b64url(header) + '.' + b64url(claims);
+  const signature = crypto.createSign('RSA-SHA256').update(signingInput).sign(PRIVATE_KEY).toString('base64url');
+  const jwt = signingInput + '.' + signature;
+
+  const postBody = 'grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=' + encodeURIComponent(jwt);
+  const res = await httpsRequest({
+    hostname: 'oauth2.googleapis.com', port: 443, path: '/token', method: 'POST', family: 4,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(postBody), 'Accept': 'application/json' }
+  }, postBody);
+
+  let data;
+  try { data = JSON.parse(res.body); } catch (e) { throw new Error('OAuth response not JSON (HTTP ' + res.status + '): ' + res.body.slice(0, 200)); }
+  if (res.status !== 200 || !data.access_token) throw new Error('OAuth failed (HTTP ' + res.status + '): ' + (data.error_description || data.error || res.body));
+
+  tokenCache.token = data.access_token;
+  tokenCache.expiresAt = Date.now() + (data.expires_in * 1000);
+  console.log('[Auth] Access token acquired via native OAuth (expires in ' + data.expires_in + 's)');
+  return tokenCache.token;
+}
+
+// ===== NATIVE GOOGLE SHEETS API HELPERS =====
+const SHEETS_BASE = '/v4/spreadsheets/' + SHEET_ID;
+
+async function sheetsAPI(path, method, body) {
+  const token = await getAccessToken();
+  const opts = {
+    hostname: 'sheets.googleapis.com', port: 443, method: method || 'GET', family: 4,
+    path: SHEETS_BASE + path,
+    headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' }
+  };
+  let payload;
+  if (body) {
+    payload = JSON.stringify(body);
+    opts.headers['Content-Type'] = 'application/json';
+    opts.headers['Content-Length'] = Buffer.byteLength(payload);
+  }
+  const res = await httpsRequest(opts, payload);
+  let data;
+  try { data = JSON.parse(res.body); } catch (e) { throw new Error('Sheets API not JSON (HTTP ' + res.status + '): ' + res.body.slice(0, 300)); }
+  if (res.status < 200 || res.status >= 300) throw new Error('Sheets API error (HTTP ' + res.status + '): ' + (data.error?.message || res.body.slice(0, 300)));
+  return data;
+}
+
+async function sheetsGetValues(range) {
+  return sheetsAPI('/values/' + encodeURIComponent(range));
+}
+
+async function sheetsBatchGetValues(ranges) {
+  const qs = ranges.map(r => 'ranges=' + encodeURIComponent(r)).join('&');
+  return sheetsAPI('/values:batchGet?' + qs);
+}
+
+async function sheetsAppendValues(range, values) {
+  const qs = 'valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS';
+  return sheetsAPI('/values/' + encodeURIComponent(range) + ':append?' + qs, 'POST', { values });
+}
+
+async function sheetsUpdateValues(range, values) {
+  const qs = 'valueInputOption=USER_ENTERED';
+  return sheetsAPI('/values/' + encodeURIComponent(range) + '?' + qs, 'PUT', { values });
+}
+
+async function sheetsGetMeta() {
+  return sheetsAPI('');
+}
+
+async function sheetsBatchUpdate(requests) {
+  return sheetsAPI(':batchUpdate', 'POST', { requests });
+}
 
 // ===== CACHE FOR LOOKUPS (refreshed every 60s) =====
 let cache = { data: null, ts: 0 };
@@ -35,18 +129,15 @@ const CACHE_MS = 60 * 1000;
 async function getLookups() {
   if (cache.data && Date.now() - cache.ts < CACHE_MS) return cache.data;
 
-  const res = await sheets.spreadsheets.values.batchGet({
-    spreadsheetId: SHEET_ID,
-    ranges: [
-      `${CUSTOMER_SHEET}!A:E`,
-      `${STORE_SHEET}!A:D`,
-      `${SUPPLIER_SHEET}!A:C`,
-    ],
-  });
+  const res = await sheetsBatchGetValues([
+    `${CUSTOMER_SHEET}!A:E`,
+    `${STORE_SHEET}!A:D`,
+    `${SUPPLIER_SHEET}!A:C`,
+  ]);
 
-  const custRows = res.data.valueRanges[0].values || [];
-  const storeRows = res.data.valueRanges[1].values || [];
-  const supRows = res.data.valueRanges[2].values || [];
+  const custRows = res.valueRanges[0].values || [];
+  const storeRows = res.valueRanges[1].values || [];
+  const supRows = res.valueRanges[2].values || [];
 
   // CustomerName: A=No, B=FullName, C=StoreID, D=StoreName(105-VAL), E=Region
   const customers = custRows.slice(1)
@@ -90,11 +181,8 @@ function upper(v) { return typeof v === 'string' ? v.toUpperCase() : v; }
 
 // ===== READ BOOKINGS =====
 async function readBookings() {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${MAIN_SHEET}!A:N`,
-  });
-  const rows = res.data.values || [];
+  const res = await sheetsGetValues(`${MAIN_SHEET}!A:N`);
+  const rows = res.values || [];
   if (rows.length <= 1) return [];
 
   return rows.slice(1).map((r, i) => ({
@@ -120,11 +208,8 @@ async function readBookings() {
 let userCache = { data: null, ts: 0 };
 async function readUsers() {
   if (userCache.data && Date.now() - userCache.ts < CACHE_MS) return userCache.data;
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: 'Users!A:E',
-  });
-  const rows = res.data.values || [];
+  const res = await sheetsGetValues('Users!A:E');
+  const rows = res.values || [];
   const users = rows.slice(1).filter(r => r[0]).map(r => ({
     username: String(r[0]).trim().toLowerCase(),
     password: String(r[1] || ''),
@@ -284,13 +369,7 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
       '',                  // Last_Edited_By empty on create
     ];
 
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SHEET_ID,
-      range: `${MAIN_SHEET}!A:N`,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: [row] },
-    });
+    await sheetsAppendValues(`${MAIN_SHEET}!A:N`, [row]);
 
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -341,12 +420,7 @@ app.put('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
       req.user.username,         // Last_Edited_By
     ];
 
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: `${MAIN_SHEET}!A${rowIndex}:N${rowIndex}`,
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [row] },
-    });
+    await sheetsUpdateValues(`${MAIN_SHEET}!A${rowIndex}:N${rowIndex}`, [row]);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
@@ -357,25 +431,20 @@ app.delete('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Only admins can delete bookings' });
     }
     const rowIndex = parseInt(req.params.rowIndex);
-    const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
-    const ms = meta.data.sheets.find(s => s.properties.title === MAIN_SHEET);
+    const meta = await sheetsGetMeta();
+    const ms = meta.sheets.find(s => s.properties.title === MAIN_SHEET);
     if (!ms) throw new Error('Main sheet not found');
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SHEET_ID,
-      requestBody: {
-        requests: [{
-          deleteDimension: {
-            range: {
-              sheetId: ms.properties.sheetId,
-              dimension: 'ROWS',
-              startIndex: rowIndex - 1,
-              endIndex: rowIndex,
-            },
-          },
-        }],
+    await sheetsBatchUpdate([{
+      deleteDimension: {
+        range: {
+          sheetId: ms.properties.sheetId,
+          dimension: 'ROWS',
+          startIndex: rowIndex - 1,
+          endIndex: rowIndex,
+        },
       },
-    });
+    }]);
 
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -383,11 +452,8 @@ app.delete('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
 
 // ===== TRANSACTIONS =====
 async function readTransactions() {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${TRX_SHEET}!A:P`,
-  });
-  const rows = res.data.values || [];
+  const res = await sheetsGetValues(`${TRX_SHEET}!A:P`);
+  const rows = res.values || [];
   if (rows.length <= 1) return [];
 
   return rows.slice(1).map((r, i) => ({
@@ -487,13 +553,7 @@ app.post('/api/transactions', requireAuth, async (req, res) => {
       '',                  // Last_Edited_By
     ];
 
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SHEET_ID,
-      range: `${TRX_SHEET}!A:P`,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: [row] },
-    });
+    await sheetsAppendValues(`${TRX_SHEET}!A:P`, [row]);
 
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -545,12 +605,7 @@ app.put('/api/transactions/:rowIndex', requireAuth, async (req, res) => {
       req.user.username,
     ];
 
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: `${TRX_SHEET}!A${rowIndex}:P${rowIndex}`,
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [row] },
-    });
+    await sheetsUpdateValues(`${TRX_SHEET}!A${rowIndex}:P${rowIndex}`, [row]);
 
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -560,25 +615,20 @@ app.delete('/api/transactions/:rowIndex', requireAuth, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Only admins can delete transactions' });
     const rowIndex = parseInt(req.params.rowIndex);
-    const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
-    const ts = meta.data.sheets.find(s => s.properties.title === TRX_SHEET);
+    const meta = await sheetsGetMeta();
+    const ts = meta.sheets.find(s => s.properties.title === TRX_SHEET);
     if (!ts) throw new Error('Transaction sheet not found');
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SHEET_ID,
-      requestBody: {
-        requests: [{
-          deleteDimension: {
-            range: {
-              sheetId: ts.properties.sheetId,
-              dimension: 'ROWS',
-              startIndex: rowIndex - 1,
-              endIndex: rowIndex,
-            },
-          },
-        }],
+    await sheetsBatchUpdate([{
+      deleteDimension: {
+        range: {
+          sheetId: ts.properties.sheetId,
+          dimension: 'ROWS',
+          startIndex: rowIndex - 1,
+          endIndex: rowIndex,
+        },
       },
-    });
+    }]);
 
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -1350,7 +1400,7 @@ function exportExcel(){
   // Build rows with headers exactly as on the Booking sheet (A-L, exclude M and N)
   const headers = ['Date_Booked','Customer_No','Customer_Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Total_Booked_Amount','Remarks'];
   const rows = [headers, ...data.map(b => headers.map(h => {
-    if (h === 'Total_Booked_Amount') return parseFloat(b[h]) || 0;
+    if (h === 'Total_Booked_Amount') return num(b[h]);
     return b[h] || '';
   }))];
 
@@ -1807,7 +1857,7 @@ function exportTrxExcel(){
   const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net','TRX_Number'];
   const fields = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net','TRX_Number'];
   const rows = [headers, ...data.map(t => fields.map(f => {
-    if (['Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net'].includes(f)) return parseFloat(t[f]) || 0;
+    if (['Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net'].includes(f)) return num(t[f]);
     return t[f] || '';
   }))];
 
