@@ -1350,7 +1350,7 @@ function exportExcel(){
   // Build rows with headers exactly as on the Booking sheet (A-L, exclude M and N)
   const headers = ['Date_Booked','Customer_No','Customer_Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Total_Booked_Amount','Remarks'];
   const rows = [headers, ...data.map(b => headers.map(h => {
-    if (h === 'Total_Booked_Amount') return parseFloat(b[h]) || 0;
+    if (h === 'Total_Booked_Amount') return num(b[h]);
     return b[h] || '';
   }))];
 
@@ -1807,7 +1807,7 @@ function exportTrxExcel(){
   const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net','TRX_Number'];
   const fields = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net','TRX_Number'];
   const rows = [headers, ...data.map(t => fields.map(f => {
-    if (['Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net'].includes(f)) return parseFloat(t[f]) || 0;
+    if (['Transacted_Amount_Gross','Transacted_Discount_Net','Transacted_Amount_Net'].includes(f)) return num(t[f]);
     return t[f] || '';
   }))];
 
