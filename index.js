@@ -1030,13 +1030,16 @@ const HTML = `<!DOCTYPE html>
       <div class="card p-3 mb-3">
         <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
           <h6 class="m-0">Performance Breakdown</h6>
-          <ul class="nav nav-pills" id="perfTabs">
-            <li class="nav-item"><a class="nav-link active" data-perf="Area" href="#" onclick="event.preventDefault();setPerf('Area')">By Area</a></li>
-            <li class="nav-item"><a class="nav-link" data-perf="Store_Delivery" href="#" onclick="event.preventDefault();setPerf('Store_Delivery')">By Store</a></li>
-            <li class="nav-item"><a class="nav-link" data-perf="Supplier" href="#" onclick="event.preventDefault();setPerf('Supplier')">By Supplier</a></li>
-            <li class="nav-item"><a class="nav-link" data-perf="Name" href="#" onclick="event.preventDefault();setPerf('Name')">By Customer</a></li>
-            <li class="nav-item"><a class="nav-link" data-perf="Dept" href="#" onclick="event.preventDefault();setPerf('Dept')">By Dept</a></li>
-          </ul>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <ul class="nav nav-pills" id="perfTabs">
+              <li class="nav-item"><a class="nav-link active" data-perf="Area" href="#" onclick="event.preventDefault();setPerf('Area')">By Area</a></li>
+              <li class="nav-item"><a class="nav-link" data-perf="Store_Delivery" href="#" onclick="event.preventDefault();setPerf('Store_Delivery')">By Store</a></li>
+              <li class="nav-item"><a class="nav-link" data-perf="Supplier" href="#" onclick="event.preventDefault();setPerf('Supplier')">By Supplier</a></li>
+              <li class="nav-item"><a class="nav-link" data-perf="Name" href="#" onclick="event.preventDefault();setPerf('Name')">By Customer</a></li>
+              <li class="nav-item"><a class="nav-link" data-perf="Dept" href="#" onclick="event.preventDefault();setPerf('Dept')">By Dept</a></li>
+            </ul>
+            <button class="btn btn-sm btn-success" onclick="exportPerfExcel()"><i class="fas fa-file-excel me-1"></i>Export</button>
+          </div>
         </div>
         <div class="table-responsive">
           <table class="table table-sm">
@@ -1047,7 +1050,8 @@ const HTML = `<!DOCTYPE html>
               <th class="text-end perf-sort" data-perf-sort="net" style="cursor:pointer;user-select:none">Transacted (Net) ⇅</th>
               <th class="text-end perf-sort" data-perf-sort="balance" style="cursor:pointer;user-select:none">Balance ⇅</th>
               <th class="text-end perf-sort" data-perf-sort="pct" style="cursor:pointer;user-select:none;min-width:160px">% Transacted ⇅</th>
-              <th id="perfJustifyCol" class="text-center" style="min-width:200px;display:none">Justification below <span id="perfJustifyPct">0</span>%</th>
+              <th id="perfJustifyCol" style="display:none">Justification below <span id="perfJustifyPct">0</span>%</th>
+              <th id="perfJustifyActCol" class="text-center" style="display:none;width:70px">Action</th>
             </tr></thead>
             <tbody id="perfBody"></tbody>
           </table>
@@ -2087,11 +2091,11 @@ function renderPerformance(){
     return 0;
   });
 
-  // Show/hide justification column
-  const justCol = document.getElementById('perfJustifyCol');
-  justCol.style.display = isCustomer ? '' : 'none';
+  // Show/hide justification columns
+  document.getElementById('perfJustifyCol').style.display = isCustomer ? '' : 'none';
+  document.getElementById('perfJustifyActCol').style.display = isCustomer ? '' : 'none';
   if (isCustomer) document.getElementById('perfJustifyPct').textContent = overallPct.toFixed(1);
-  const colSpan = isCustomer ? 7 : 6;
+  const colSpan = isCustomer ? 8 : 6;
 
   const tbody = document.getElementById('perfBody');
   if (!rows.length){
@@ -2105,13 +2109,14 @@ function renderPerformance(){
     let justifyCell = '';
     if (isCustomer) {
       const j = justifications[r.key.toLowerCase()];
+      const safeKey = r.key.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
       if (r.pct < overallPct) {
-        const btnLabel = j ? '<i class="fas fa-edit me-1"></i>Edit' : '<i class="fas fa-plus me-1"></i>Add';
-        const jText = j ? '<div class="small text-muted mt-1" style="max-width:180px;white-space:normal;word-break:break-word">' + j.Justification.replace(/</g,'&lt;') + '</div>' : '';
-        const safeKey = r.key.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-        justifyCell = '<td class="text-center">' + jText + '<button class="btn btn-sm btn-outline-primary action-btn mt-1" data-cust="' + safeKey + '" data-pct="' + r.pct + '" onclick="openJustifyModal(this.dataset.cust, parseFloat(this.dataset.pct))">' + btnLabel + '</button></td>';
+        const btnLabel = j ? '<i class="fas fa-edit"></i>' : '<i class="fas fa-plus"></i> Add';
+        const jText = j ? j.Justification.replace(/</g,'&lt;') : '<span class="text-muted">—</span>';
+        justifyCell = '<td style="white-space:normal;word-break:break-word;max-width:300px">' + jText + '</td>'
+          + '<td class="text-center"><button class="btn btn-sm btn-outline-primary action-btn" data-cust="' + safeKey + '" data-pct="' + r.pct + '" onclick="openJustifyModal(this.dataset.cust, parseFloat(this.dataset.pct))">' + btnLabel + '</button></td>';
       } else {
-        justifyCell = '<td class="text-center text-muted small">—</td>';
+        justifyCell = '<td class="text-muted small">—</td><td></td>';
       }
     }
     return \`
@@ -2266,6 +2271,54 @@ function goUpdPage(p){ updCurrentPage = p; renderUpdate(); }
 document.getElementById('updSearch').addEventListener('input', () => { updCurrentPage = 1; renderUpdate(); });
 document.getElementById('updFilterArea').addEventListener('change', () => { updCurrentPage = 1; renderUpdate(); });
 document.getElementById('updFilterStore').addEventListener('change', () => { updCurrentPage = 1; renderUpdate(); });
+
+function exportPerfExcel(){
+  const data = getUpdFiltered();
+  const isCustomer = currentPerf === 'Name';
+  const groups = {};
+  data.forEach(r => {
+    const key = r[currentPerf] || '(blank)';
+    if (!groups[key]) groups[key] = { count: 0, booked: 0, net: 0 };
+    groups[key].count++;
+    groups[key].booked += num(r.Total_Booked_Amount);
+    groups[key].net += num(r.Transacted_Amount_Net);
+  });
+  const rows = Object.entries(groups).map(([k, v]) => ({
+    key: k, ...v, balance: v.booked - v.net, pct: v.booked > 0 ? (v.net / v.booked * 100) : 0
+  }));
+  if (!rows.length){ toast('No data to export', 'error'); return; }
+
+  const labels = { Area: 'Area', Store_Delivery: 'Store', Supplier: 'Supplier', Name: 'Customer', Dept: 'Dept' };
+  const groupLabel = labels[currentPerf] || currentPerf;
+  let headers = [groupLabel, 'Bookings', 'Booked', 'Transacted (Net)', 'Balance', '% Transacted'];
+  if (isCustomer) headers.push('Justification below ' + overallPct.toFixed(1) + '%');
+
+  const xlRows = [headers, ...rows.map(r => {
+    const row = [r.key, r.count, r.booked, r.net, r.balance, r.pct / 100];
+    if (isCustomer) {
+      const j = justifications[r.key.toLowerCase()];
+      row.push(r.pct < overallPct ? (j ? j.Justification : '') : '');
+    }
+    return row;
+  })];
+
+  const ws = XLSX.utils.aoa_to_sheet(xlRows);
+  ws['!cols'] = headers.map((h, i) => ({ wch: i === 0 ? 30 : isCustomer && i === headers.length - 1 ? 40 : 18 }));
+  for (let r = 1; r <= rows.length; r++){
+    const pctAddr = XLSX.utils.encode_cell({ r, c: 5 });
+    if (ws[pctAddr]) ws[pctAddr].z = '0.0%';
+    [2,3,4].forEach(c => {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (ws[addr]) ws[addr].z = '#,##0.00';
+    });
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Performance_' + groupLabel);
+  const d = new Date();
+  const stamp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  XLSX.writeFile(wb, 'Performance_' + groupLabel + '_' + stamp + '.xlsx');
+  toast('Exported ' + rows.length + ' rows');
+}
 
 function exportUpdateExcel(){
   const data = getUpdFiltered();
