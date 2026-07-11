@@ -747,6 +747,31 @@ app.post('/api/justifications', requireAuth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
+app.delete('/api/justifications/:customerName', requireAuth, async (req, res) => {
+  try {
+    const target = decodeURIComponent(req.params.customerName).toLowerCase();
+    const existing = await readJustifications();
+    const match = existing.find(j => j.Customer_Name.toLowerCase() === target);
+    if (!match) return res.status(404).json({ error: 'Justification not found' });
+
+    const meta = await sheetsGetMeta();
+    const js = meta.sheets.find(s => s.properties.title === JUSTIFICATION_SHEET);
+    if (!js) throw new Error('Justification sheet not found');
+
+    await sheetsBatchUpdate([{
+      deleteDimension: {
+        range: {
+          sheetId: js.properties.sheetId,
+          dimension: 'ROWS',
+          startIndex: match.rowIndex - 1,
+          endIndex: match.rowIndex,
+        },
+      },
+    }]);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
 // ===== FRONTEND =====
 const HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -2057,6 +2082,18 @@ async function saveJustification(){
   finally { showSpinner(false); }
 }
 
+async function deleteJustification(customerName){
+  if (!confirm('Clear justification for ' + customerName + '?')) return;
+  showSpinner(true);
+  try {
+    await api('DELETE', '/api/justifications/' + encodeURIComponent(customerName));
+    toast('Justification cleared');
+    await loadJustifications();
+    renderPerformance();
+  } catch(e){ toast(e.message, 'error'); }
+  finally { showSpinner(false); }
+}
+
 function setPerf(field){
   currentPerf = field;
   document.querySelectorAll('#perfTabs .nav-link').forEach(a => {
@@ -2110,14 +2147,11 @@ function renderPerformance(){
     if (isCustomer) {
       const j = justifications[r.key.toLowerCase()];
       const safeKey = r.key.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-      if (r.pct < overallPct) {
-        const btnLabel = j ? '<i class="fas fa-edit"></i>' : '<i class="fas fa-plus"></i> Add';
-        const jText = j ? j.Justification.replace(/</g,'&lt;') : '<span class="text-muted">—</span>';
-        justifyCell = '<td style="white-space:normal;word-break:break-word;max-width:300px">' + jText + '</td>'
-          + '<td class="text-center"><button class="btn btn-sm btn-outline-primary action-btn" data-cust="' + safeKey + '" data-pct="' + r.pct + '" onclick="openJustifyModal(this.dataset.cust, parseFloat(this.dataset.pct))">' + btnLabel + '</button></td>';
-      } else {
-        justifyCell = '<td class="text-muted small">—</td><td></td>';
-      }
+      const jText = j ? j.Justification.replace(/</g,'&lt;') : '<span class="text-muted">—</span>';
+      const editBtn = '<button class="btn btn-sm btn-outline-primary action-btn" data-cust="' + safeKey + '" data-pct="' + r.pct + '" onclick="openJustifyModal(this.dataset.cust, parseFloat(this.dataset.pct))" title="' + (j ? 'Edit' : 'Add') + '">' + (j ? '<i class="fas fa-edit"></i>' : '<i class="fas fa-plus"></i> Add') + '</button>';
+      const delBtn = j ? ' <button class="btn btn-sm btn-outline-danger action-btn" data-cust="' + safeKey + '" onclick="deleteJustification(this.dataset.cust)" title="Clear"><i class="fas fa-trash-alt"></i></button>' : '';
+      justifyCell = '<td style="white-space:normal;word-break:break-word;max-width:300px">' + jText + '</td>'
+        + '<td class="text-center text-nowrap">' + editBtn + delBtn + '</td>';
     }
     return \`
       <tr>
