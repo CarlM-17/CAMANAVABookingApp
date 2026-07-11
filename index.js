@@ -95,23 +95,27 @@ async function sheetsAPI(path, method, body) {
   return data;
 }
 
+function encRange(range) {
+  return encodeURIComponent(range).replace(/%21/g, '!').replace(/%3A/g, ':');
+}
+
 async function sheetsGetValues(range) {
-  return sheetsAPI('/values/' + encodeURIComponent(range));
+  return sheetsAPI('/values/' + encRange(range));
 }
 
 async function sheetsBatchGetValues(ranges) {
-  const qs = ranges.map(r => 'ranges=' + encodeURIComponent(r)).join('&');
+  const qs = ranges.map(r => 'ranges=' + encRange(r)).join('&');
   return sheetsAPI('/values:batchGet?' + qs);
 }
 
 async function sheetsAppendValues(range, values) {
   const qs = 'valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS';
-  return sheetsAPI('/values/' + encodeURIComponent(range) + ':append?' + qs, 'POST', { values });
+  return sheetsAPI('/values/' + encRange(range) + ':append?' + qs, 'POST', { values });
 }
 
 async function sheetsUpdateValues(range, values) {
   const qs = 'valueInputOption=USER_ENTERED';
-  return sheetsAPI('/values/' + encodeURIComponent(range) + '?' + qs, 'PUT', { values });
+  return sheetsAPI('/values/' + encRange(range) + '?' + qs, 'PUT', { values });
 }
 
 async function sheetsGetMeta() {
