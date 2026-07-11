@@ -696,6 +696,53 @@ app.get('/api/booking-update', requireAuth, async (req, res) => {
 
 app.post('/api/refresh-cache', (req, res) => { invalidateCache(); res.json({ ok: true }); });
 
+// ===== JUSTIFICATIONS =====
+const JUSTIFICATION_SHEET = 'Justification';
+
+async function readJustifications() {
+  try {
+    const res = await sheetsGetValues(`${JUSTIFICATION_SHEET}!A:D`);
+    const rows = res.values || [];
+    if (rows.length <= 1) return [];
+    return rows.slice(1).filter(r => r[0]).map((r, i) => ({
+      rowIndex: i + 2,
+      Customer_Name: r[0] || '',
+      Justification: r[1] || '',
+      Updated_By: r[2] || '',
+      Updated_Date: r[3] || '',
+    }));
+  } catch (e) {
+    console.error('[Justification] Sheet read error:', e.message);
+    return [];
+  }
+}
+
+app.get('/api/justifications', requireAuth, async (req, res) => {
+  try { res.json(await readJustifications()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/justifications', requireAuth, async (req, res) => {
+  try {
+    const { Customer_Name, Justification } = req.body;
+    if (!Customer_Name || !Justification) return res.status(400).json({ error: 'Customer name and justification required' });
+
+    const existing = await readJustifications();
+    const match = existing.find(j => j.Customer_Name.toLowerCase() === Customer_Name.toLowerCase());
+
+    if (match) {
+      await sheetsUpdateValues(`${JUSTIFICATION_SHEET}!A${match.rowIndex}:D${match.rowIndex}`, [[
+        Customer_Name, Justification, req.user.username, todayMDY()
+      ]]);
+    } else {
+      await sheetsAppendValues(`${JUSTIFICATION_SHEET}!A:D`, [[
+        Customer_Name, Justification, req.user.username, todayMDY()
+      ]]);
+    }
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
 // ===== FRONTEND =====
 const HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -996,6 +1043,7 @@ const HTML = `<!DOCTYPE html>
               <th class="text-end perf-sort" data-perf-sort="net" style="cursor:pointer;user-select:none">Transacted (Net) ⇅</th>
               <th class="text-end perf-sort" data-perf-sort="balance" style="cursor:pointer;user-select:none">Balance ⇅</th>
               <th class="text-end perf-sort" data-perf-sort="pct" style="cursor:pointer;user-select:none;min-width:160px">% Transacted ⇅</th>
+              <th id="perfJustifyCol" class="text-center" style="min-width:200px;display:none">Justification below <span id="perfJustifyPct">0</span>%</th>
             </tr></thead>
             <tbody id="perfBody"></tbody>
           </table>
@@ -1056,6 +1104,21 @@ const HTML = `<!DOCTYPE html>
     <div class="d-flex gap-2 mt-3">
       <button class="btn btn-sm btn-outline-secondary flex-fill" onclick="switchCamera()"><i class="fas fa-sync me-1"></i>Switch Camera</button>
       <button class="btn btn-sm btn-secondary flex-fill" onclick="closeScanner()">Cancel</button>
+    </div>
+  </div>
+</div>
+<div class="scanner-modal" id="justifyModal">
+  <div class="scanner-box">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <h6 class="m-0"><i class="fas fa-comment-dots me-2"></i>Justification</h6>
+      <button class="btn-close" onclick="closeJustifyModal()"></button>
+    </div>
+    <div class="mb-3"><label class="form-label">Customer</label><input type="text" class="form-control" id="justifyCustomer" readonly></div>
+    <div class="mb-3"><label class="form-label">% Transacted</label><input type="text" class="form-control" id="justifyPct" readonly></div>
+    <div class="mb-3"><label class="form-label">Justification <span class="required-mark">*</span></label><textarea class="form-control" id="justifyText" rows="3" placeholder="Enter justification..."></textarea></div>
+    <div class="d-flex gap-2">
+      <button class="btn btn-primary flex-fill" onclick="saveJustification()"><i class="fas fa-save me-1"></i>Save</button>
+      <button class="btn btn-secondary flex-fill" onclick="closeJustifyModal()">Cancel</button>
     </div>
   </div>
 </div>
@@ -1947,6 +2010,44 @@ function closeScanner(){
 let currentPerf = 'Area';
 let perfSortField = 'booked';
 let perfSortAsc = false;
+let justifications = {};
+let overallPct = 0;
+
+async function loadJustifications(){
+  try {
+    const data = await api('GET', '/api/justifications');
+    justifications = {};
+    data.forEach(j => { justifications[j.Customer_Name.toLowerCase()] = j; });
+  } catch(e){ console.error('Failed to load justifications:', e); }
+}
+
+function openJustifyModal(customerName, pct){
+  const existing = justifications[customerName.toLowerCase()];
+  document.getElementById('justifyCustomer').value = customerName;
+  document.getElementById('justifyPct').value = pct.toFixed(1) + '%';
+  document.getElementById('justifyText').value = existing ? existing.Justification : '';
+  document.getElementById('justifyModal').classList.add('show');
+  document.getElementById('justifyText').focus();
+}
+
+function closeJustifyModal(){
+  document.getElementById('justifyModal').classList.remove('show');
+}
+
+async function saveJustification(){
+  const name = document.getElementById('justifyCustomer').value;
+  const text = document.getElementById('justifyText').value.trim();
+  if (!text){ toast('Please enter a justification', 'error'); return; }
+  showSpinner(true);
+  try {
+    await api('POST', '/api/justifications', { Customer_Name: name, Justification: text });
+    toast('Justification saved');
+    closeJustifyModal();
+    await loadJustifications();
+    renderPerformance();
+  } catch(e){ toast(e.message, 'error'); }
+  finally { showSpinner(false); }
+}
 
 function setPerf(field){
   currentPerf = field;
@@ -1960,6 +2061,7 @@ function setPerf(field){
 
 function renderPerformance(){
   const data = getUpdFiltered();
+  const isCustomer = currentPerf === 'Name';
   const groups = {};
   data.forEach(r => {
     const key = r[currentPerf] || '(blank)';
@@ -1981,15 +2083,33 @@ function renderPerformance(){
     return 0;
   });
 
+  // Show/hide justification column
+  const justCol = document.getElementById('perfJustifyCol');
+  justCol.style.display = isCustomer ? '' : 'none';
+  if (isCustomer) document.getElementById('perfJustifyPct').textContent = overallPct.toFixed(1);
+  const colSpan = isCustomer ? 7 : 6;
+
   const tbody = document.getElementById('perfBody');
   if (!rows.length){
-    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">No data</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="' + colSpan + '" class="text-center text-muted py-3">No data</td></tr>';
     return;
   }
 
   tbody.innerHTML = rows.map(r => {
     const pctCapped = Math.min(r.pct, 100);
     const pctColor = r.pct >= 100 ? 'var(--success)' : r.pct >= 50 ? 'var(--primary)' : 'var(--danger)';
+    let justifyCell = '';
+    if (isCustomer) {
+      const j = justifications[r.key.toLowerCase()];
+      if (r.pct < overallPct) {
+        const btnLabel = j ? '<i class="fas fa-edit me-1"></i>Edit' : '<i class="fas fa-plus me-1"></i>Add';
+        const jText = j ? '<div class="small text-muted mt-1" style="max-width:180px;white-space:normal;word-break:break-word">' + j.Justification.replace(/</g,'&lt;') + '</div>' : '';
+        const safeKey = r.key.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+        justifyCell = '<td class="text-center">' + jText + '<button class="btn btn-sm btn-outline-primary action-btn mt-1" data-cust="' + safeKey + '" data-pct="' + r.pct + '" onclick="openJustifyModal(this.dataset.cust, parseFloat(this.dataset.pct))">' + btnLabel + '</button></td>';
+      } else {
+        justifyCell = '<td class="text-center text-muted small">—</td>';
+      }
+    }
     return \`
       <tr>
         <td><strong>\${r.key}</strong></td>
@@ -2005,6 +2125,7 @@ function renderPerformance(){
             <span style="color:\${pctColor};font-weight:600;min-width:50px">\${r.pct.toFixed(1)}%</span>
           </div>
         </td>
+        \${justifyCell}
       </tr>
     \`;
   }).join('');
@@ -2027,7 +2148,8 @@ let updCurrentPage = 1;
 async function loadBookingUpdate(){
   showSpinner(true);
   try {
-    allUpdate = await api('GET', '/api/booking-update');
+    const [data] = await Promise.all([api('GET', '/api/booking-update'), loadJustifications()]);
+    allUpdate = data;
     populateUpdFilters();
     renderUpdate();
   } catch(e){ toast(e.message, 'error'); }
@@ -2082,6 +2204,7 @@ function renderUpdate(){
   const net = data.reduce((s,r) => s + num(r.Transacted_Amount_Net), 0);
   const balance = booked - net;
   const pct = booked > 0 ? (net / booked * 100) : 0;
+  overallPct = pct;
   document.getElementById('updStatBooked').textContent = fmtPeso(booked);
   document.getElementById('updStatNet').textContent = fmtPeso(net);
   document.getElementById('updStatBalance').textContent = fmtPeso(balance);
