@@ -856,6 +856,12 @@ const HTML = `<!DOCTYPE html>
   .stat-card{padding:20px;border-radius:12px}
   .stat-card .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
   .stat-card .value{font-size:26px;font-weight:700;margin-top:6px}
+  .stat-mini{padding:12px 14px;height:100%;display:flex;flex-direction:column;justify-content:center;min-height:82px}
+  .stat-mini .label{font-size:10px;letter-spacing:.4px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stat-mini .value{font-size:17px;font-weight:700;margin-top:4px;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .upd-stats .col-6,.upd-stats [class*="col-"]{display:flex}
+  .upd-stats .card{width:100%}
+  @media(max-width:768px){.stat-mini .value{font-size:15px}}
   .toast-container{position:fixed;top:20px;right:20px;z-index:9999}
   .toast-msg{padding:12px 20px;border-radius:8px;margin-bottom:10px;color:#fff;min-width:280px;box-shadow:0 4px 12px rgba(0,0,0,.15);animation:slide .3s}
   .toast-msg.success{background:var(--success)}.toast-msg.error{background:var(--danger)}
@@ -1099,15 +1105,15 @@ const HTML = `<!DOCTYPE html>
 
     <!-- BOOKING UPDATE TAB -->
     <div class="tab-pane fade" id="updateTab">
-      <div class="row g-3 mb-3">
-        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">Total Booked</div><div class="value" id="updStatBooked">₱0</div></div></div>
-        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">Transacted (Net)</div><div class="value" id="updStatNet">₱0</div></div></div>
-        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">Balance</div><div class="value" id="updStatBalance">₱0</div></div></div>
-        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">% Transacted</div><div class="value" id="updStatPct">0%</div></div></div>
-        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">Amount for Cancel</div><div class="value" id="updStatCancel" style="color:var(--danger)">₱0</div></div></div>
-        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">On Hand (Val)</div><div class="value" id="updStatOnHand">₱0</div></div></div>
-        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">With PO (Val)</div><div class="value" id="updStatWithPO">₱0</div></div></div>
-        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">For PO (Val)</div><div class="value" id="updStatForPO">₱0</div></div></div>
+      <div class="row g-2 mb-3 upd-stats">
+        <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #2563eb"><div class="label">Total Booked</div><div class="value" id="updStatBooked" style="color:#2563eb">₱0</div></div></div>
+        <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #10b981"><div class="label">Transacted (Net)</div><div class="value" id="updStatNet" style="color:#10b981">₱0</div></div></div>
+        <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #f59e0b"><div class="label">Balance</div><div class="value" id="updStatBalance" style="color:#f59e0b">₱0</div></div></div>
+        <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #8b5cf6"><div class="label">% Transacted</div><div class="value" id="updStatPct" style="color:#8b5cf6">0%</div></div></div>
+        <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #ef4444"><div class="label">Amount for Cancel</div><div class="value" id="updStatCancel" style="color:#ef4444">₱0</div></div></div>
+        <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #0ea5e9"><div class="label">On Hand (Val)</div><div class="value" id="updStatOnHand" style="color:#0ea5e9">₱0</div></div></div>
+        <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #14b8a6"><div class="label">With PO (Val)</div><div class="value" id="updStatWithPO" style="color:#14b8a6">₱0</div></div></div>
+        <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #ec4899"><div class="label">For PO (Val)</div><div class="value" id="updStatForPO" style="color:#ec4899">₱0</div></div></div>
       </div>
 
       <!-- PERFORMANCE BREAKDOWN -->
