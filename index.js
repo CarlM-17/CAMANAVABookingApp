@@ -2371,14 +2371,29 @@ function onProceedChange(el){
   saveProceedRow(el.dataset.booking, { Proceed: el.value }, true);
 }
 
+function fmtNum(v){
+  if (v === '' || v == null) return '';
+  const n = num(v);
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function onNumFieldFocus(el){
+  // Show raw number (no commas) while editing
+  const raw = el.value.replace(/,/g, '');
+  el.value = raw;
+  el.select();
+}
+
 function onNumFieldBlur(el){
   const bookingNo = el.dataset.booking;
   const field = el.dataset.field;
-  const val = el.value.trim();
+  const raw = el.value.replace(/,/g, '').trim();
   const row = allUpdate.find(r => String(r.Booking_No).trim() === String(bookingNo).trim());
-  const prev = row ? String(row[field] || '') : '';
-  if (val === prev) return;
-  saveProceedRow(bookingNo, { [field]: val }, true);
+  const prev = row ? String(row[field] === '' || row[field] == null ? '' : row[field]) : '';
+  // Reformat display value regardless
+  el.value = fmtNum(raw);
+  if (raw === prev) return;
+  saveProceedRow(bookingNo, { [field]: raw }, true);
 }
 
 function fmtPct(v){
@@ -2446,16 +2461,16 @@ function renderUpdate(){
             </select>
           </td>
           <td class="text-end">
-            <input type="number" step="0.01" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="On_Hand_Val" value="\${r.On_Hand_Val === '' || r.On_Hand_Val == null ? '' : r.On_Hand_Val}" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
+            <input type="text" inputmode="decimal" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="On_Hand_Val" value="\${fmtNum(r.On_Hand_Val)}" onfocus="onNumFieldFocus(this)" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
           </td>
           <td class="text-end">
-            <input type="number" step="0.01" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="With_PO_Val" value="\${r.With_PO_Val === '' || r.With_PO_Val == null ? '' : r.With_PO_Val}" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
+            <input type="text" inputmode="decimal" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="With_PO_Val" value="\${fmtNum(r.With_PO_Val)}" onfocus="onNumFieldFocus(this)" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
           </td>
           <td class="text-end">
-            <input type="number" step="0.01" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="For_PO_Val" value="\${r.For_PO_Val === '' || r.For_PO_Val == null ? '' : r.For_PO_Val}" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
+            <input type="text" inputmode="decimal" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="For_PO_Val" value="\${fmtNum(r.For_PO_Val)}" onfocus="onNumFieldFocus(this)" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
           </td>
           <td class="text-end">
-            <input type="number" step="0.01" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="Amount_For_Cancel" value="\${amtVal}" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
+            <input type="text" inputmode="decimal" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="Amount_For_Cancel" value="\${fmtNum(amtVal)}" onfocus="onNumFieldFocus(this)" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
           </td>
         </tr>
       \`;
