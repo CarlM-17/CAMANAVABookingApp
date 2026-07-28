@@ -752,7 +752,7 @@ const PROCEED_SHEET = 'BookingProceed';
 
 async function readProceed() {
   try {
-    const res = await sheetsGetValues(`${PROCEED_SHEET}!A:E`);
+    const res = await sheetsGetValues(`${PROCEED_SHEET}!A:H`);
     const rows = res.values || [];
     if (rows.length <= 1) return [];
     return rows.slice(1).filter(r => r[0]).map((r, i) => ({
@@ -762,6 +762,9 @@ async function readProceed() {
       Amount_For_Cancel: r[2] || '',
       Updated_By: r[3] || '',
       Updated_Date: r[4] || '',
+      On_Hand_Val: r[5] || '',
+      With_PO_Val: r[6] || '',
+      For_PO_Val: r[7] || '',
     }));
   } catch (e) {
     console.error('[Proceed] Sheet read error:', e.message);
@@ -778,18 +781,22 @@ app.post('/api/proceed', requireAuth, async (req, res) => {
   try {
     const Booking_No = String(req.body.Booking_No || '').trim();
     const Proceed = String(req.body.Proceed || '').trim().toUpperCase();
-    const Amount_For_Cancel = req.body.Amount_For_Cancel === '' || req.body.Amount_For_Cancel == null ? '' : parseFloat(String(req.body.Amount_For_Cancel).replace(/,/g, '')) || 0;
+    const parseNum = v => (v === '' || v == null ? '' : parseFloat(String(v).replace(/,/g, '')) || 0);
+    const Amount_For_Cancel = parseNum(req.body.Amount_For_Cancel);
+    const On_Hand_Val = parseNum(req.body.On_Hand_Val);
+    const With_PO_Val = parseNum(req.body.With_PO_Val);
+    const For_PO_Val = parseNum(req.body.For_PO_Val);
     if (!Booking_No) return res.status(400).json({ error: 'Booking_No required' });
     if (Proceed && Proceed !== 'Y' && Proceed !== 'N') return res.status(400).json({ error: 'Proceed must be Y or N' });
 
     const existing = await readProceed();
     const match = existing.find(p => p.Booking_No === Booking_No);
-    const row = [Booking_No, Proceed, Amount_For_Cancel, req.user.username, todayMDY()];
+    const row = [Booking_No, Proceed, Amount_For_Cancel, req.user.username, todayMDY(), On_Hand_Val, With_PO_Val, For_PO_Val];
 
     if (match) {
-      await sheetsUpdateValues(`${PROCEED_SHEET}!A${match.rowIndex}:E${match.rowIndex}`, [row]);
+      await sheetsUpdateValues(`${PROCEED_SHEET}!A${match.rowIndex}:H${match.rowIndex}`, [row]);
     } else {
-      await sheetsAppendValues(`${PROCEED_SHEET}!A:E`, [row]);
+      await sheetsAppendValues(`${PROCEED_SHEET}!A:H`, [row]);
     }
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -1093,11 +1100,14 @@ const HTML = `<!DOCTYPE html>
     <!-- BOOKING UPDATE TAB -->
     <div class="tab-pane fade" id="updateTab">
       <div class="row g-3 mb-3">
-        <div class="col-6 col-md"><div class="card stat-card"><div class="label">Total Booked</div><div class="value" id="updStatBooked">₱0</div></div></div>
-        <div class="col-6 col-md"><div class="card stat-card"><div class="label">Transacted (Net)</div><div class="value" id="updStatNet">₱0</div></div></div>
-        <div class="col-6 col-md"><div class="card stat-card"><div class="label">Balance</div><div class="value" id="updStatBalance">₱0</div></div></div>
-        <div class="col-6 col-md"><div class="card stat-card"><div class="label">% Transacted</div><div class="value" id="updStatPct">0%</div></div></div>
-        <div class="col-6 col-md"><div class="card stat-card"><div class="label">Amount for Cancel</div><div class="value" id="updStatCancel" style="color:var(--danger)">₱0</div></div></div>
+        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">Total Booked</div><div class="value" id="updStatBooked">₱0</div></div></div>
+        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">Transacted (Net)</div><div class="value" id="updStatNet">₱0</div></div></div>
+        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">Balance</div><div class="value" id="updStatBalance">₱0</div></div></div>
+        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">% Transacted</div><div class="value" id="updStatPct">0%</div></div></div>
+        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">Amount for Cancel</div><div class="value" id="updStatCancel" style="color:var(--danger)">₱0</div></div></div>
+        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">On Hand (Val)</div><div class="value" id="updStatOnHand">₱0</div></div></div>
+        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">With PO (Val)</div><div class="value" id="updStatWithPO">₱0</div></div></div>
+        <div class="col-6 col-md-4 col-lg"><div class="card stat-card"><div class="label">For PO (Val)</div><div class="value" id="updStatForPO">₱0</div></div></div>
       </div>
 
       <!-- PERFORMANCE BREAKDOWN -->
@@ -1161,6 +1171,9 @@ const HTML = `<!DOCTYPE html>
               <th class="text-end upd-sort" data-upd-sort="Balance_Amount_Tobe_Transacted" style="cursor:pointer;user-select:none">Balance ⇅</th>
               <th class="text-end upd-sort" data-upd-sort="Pct_Transacted" style="cursor:pointer;user-select:none">% Trx ⇅</th>
               <th class="text-center upd-sort" data-upd-sort="Proceed" style="cursor:pointer;user-select:none;min-width:90px">Proceed ⇅</th>
+              <th class="text-end upd-sort" data-upd-sort="On_Hand_Val" style="cursor:pointer;user-select:none;min-width:130px">On Hand (Val) ⇅</th>
+              <th class="text-end upd-sort" data-upd-sort="With_PO_Val" style="cursor:pointer;user-select:none;min-width:130px">With PO (Val) ⇅</th>
+              <th class="text-end upd-sort" data-upd-sort="For_PO_Val" style="cursor:pointer;user-select:none;min-width:130px">For PO (Val) ⇅</th>
               <th class="text-end upd-sort" data-upd-sort="Amount_For_Cancel" style="cursor:pointer;user-select:none;min-width:140px">Amount for Cancel ⇅</th>
             </tr></thead>
             <tbody id="updTableBody"></tbody>
@@ -2253,9 +2266,17 @@ async function loadBookingUpdate(){
   try {
     const [data] = await Promise.all([api('GET', '/api/booking-update'), loadJustifications(), loadProceed()]);
     // Merge proceed data into each row
+    const asNum = v => (v === '' || v == null ? '' : num(v));
     allUpdate = data.map(r => {
       const p = proceedMap[String(r.Booking_No).trim()] || {};
-      return { ...r, Proceed: p.Proceed || '', Amount_For_Cancel: p.Amount_For_Cancel === '' || p.Amount_For_Cancel == null ? '' : num(p.Amount_For_Cancel) };
+      return {
+        ...r,
+        Proceed: p.Proceed || '',
+        Amount_For_Cancel: asNum(p.Amount_For_Cancel),
+        On_Hand_Val: asNum(p.On_Hand_Val),
+        With_PO_Val: asNum(p.With_PO_Val),
+        For_PO_Val: asNum(p.For_PO_Val),
+      };
     });
     populateUpdFilters();
     renderUpdate();
@@ -2291,7 +2312,7 @@ function getUpdFiltered(){
   else if (fP) data = data.filter(r => r.Proceed === fP);
   if (q) data = data.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)));
   // Sort
-  const numericFields = ['Total_Booked_Amount','Transacted_Amount_Net','Balance_Amount_Tobe_Transacted','Pct_Transacted','Amount_For_Cancel'];
+  const numericFields = ['Total_Booked_Amount','Transacted_Amount_Net','Balance_Amount_Tobe_Transacted','Pct_Transacted','Amount_For_Cancel','On_Hand_Val','With_PO_Val','For_PO_Val'];
   data = [...data].sort((a, b) => {
     let va = a[updSortField], vb = b[updSortField];
     if (updSortField === 'Date_Transacted'){ va = parseMDY(va)||0; vb = parseMDY(vb)||0; }
@@ -2313,34 +2334,45 @@ function clearUpdFilters(){
   renderUpdate();
 }
 
-async function saveProceedRow(bookingNo, proceed, amountForCancel, silent){
+async function saveProceedRow(bookingNo, patch, silent){
+  const key = String(bookingNo).trim();
+  const row = allUpdate.find(r => String(r.Booking_No).trim() === key);
+  if (!row) return;
+  // Merge patch into current row values
+  const asNum = v => (v === '' || v == null ? '' : num(v));
+  const payload = {
+    Booking_No: bookingNo,
+    Proceed: patch.Proceed !== undefined ? patch.Proceed : (row.Proceed || ''),
+    Amount_For_Cancel: patch.Amount_For_Cancel !== undefined ? patch.Amount_For_Cancel : (row.Amount_For_Cancel === '' ? '' : row.Amount_For_Cancel),
+    On_Hand_Val: patch.On_Hand_Val !== undefined ? patch.On_Hand_Val : (row.On_Hand_Val === '' ? '' : row.On_Hand_Val),
+    With_PO_Val: patch.With_PO_Val !== undefined ? patch.With_PO_Val : (row.With_PO_Val === '' ? '' : row.With_PO_Val),
+    For_PO_Val: patch.For_PO_Val !== undefined ? patch.For_PO_Val : (row.For_PO_Val === '' ? '' : row.For_PO_Val),
+  };
   try {
-    await api('POST', '/api/proceed', { Booking_No: bookingNo, Proceed: proceed, Amount_For_Cancel: amountForCancel });
-    // Update local cache so we don't need to reload from server
-    const row = allUpdate.find(r => String(r.Booking_No).trim() === String(bookingNo).trim());
-    if (row){ row.Proceed = proceed; row.Amount_For_Cancel = amountForCancel === '' ? '' : num(amountForCancel); }
-    proceedMap[String(bookingNo).trim()] = { Booking_No: bookingNo, Proceed: proceed, Amount_For_Cancel: amountForCancel };
+    await api('POST', '/api/proceed', payload);
+    row.Proceed = payload.Proceed;
+    row.Amount_For_Cancel = asNum(payload.Amount_For_Cancel);
+    row.On_Hand_Val = asNum(payload.On_Hand_Val);
+    row.With_PO_Val = asNum(payload.With_PO_Val);
+    row.For_PO_Val = asNum(payload.For_PO_Val);
+    proceedMap[key] = { ...payload };
     if (!silent) toast('Saved');
     renderUpdate();
   } catch(e){ toast(e.message, 'error'); }
 }
 
 function onProceedChange(el){
-  const bookingNo = el.dataset.booking;
-  const proceed = el.value;
-  const row = allUpdate.find(r => String(r.Booking_No).trim() === String(bookingNo).trim());
-  const amt = row ? (row.Amount_For_Cancel === '' ? '' : row.Amount_For_Cancel) : '';
-  saveProceedRow(bookingNo, proceed, amt, true);
+  saveProceedRow(el.dataset.booking, { Proceed: el.value }, true);
 }
 
-function onCancelAmtBlur(el){
+function onNumFieldBlur(el){
   const bookingNo = el.dataset.booking;
-  const amt = el.value.trim();
+  const field = el.dataset.field;
+  const val = el.value.trim();
   const row = allUpdate.find(r => String(r.Booking_No).trim() === String(bookingNo).trim());
-  const prevAmt = row ? String(row.Amount_For_Cancel || '') : '';
-  if (amt === prevAmt) return;  // no change
-  const proceed = row ? row.Proceed : '';
-  saveProceedRow(bookingNo, proceed, amt, true);
+  const prev = row ? String(row[field] || '') : '';
+  if (val === prev) return;
+  saveProceedRow(bookingNo, { [field]: val }, true);
 }
 
 function fmtPct(v){
@@ -2362,19 +2394,25 @@ function renderUpdate(){
   const balance = booked - net;
   const pct = booked > 0 ? (net / booked * 100) : 0;
   const cancelTotal = data.reduce((s,r) => s + (r.Proceed === 'N' ? num(r.Amount_For_Cancel) : 0), 0);
+  const onHandTotal = data.reduce((s,r) => s + num(r.On_Hand_Val), 0);
+  const withPOTotal = data.reduce((s,r) => s + num(r.With_PO_Val), 0);
+  const forPOTotal = data.reduce((s,r) => s + num(r.For_PO_Val), 0);
   overallPct = pct;
   document.getElementById('updStatBooked').textContent = fmtPeso(booked);
   document.getElementById('updStatNet').textContent = fmtPeso(net);
   document.getElementById('updStatBalance').textContent = fmtPeso(balance);
   document.getElementById('updStatPct').textContent = pct.toFixed(1) + '%';
   document.getElementById('updStatCancel').textContent = fmtPeso(cancelTotal);
+  document.getElementById('updStatOnHand').textContent = fmtPeso(onHandTotal);
+  document.getElementById('updStatWithPO').textContent = fmtPeso(withPOTotal);
+  document.getElementById('updStatForPO').textContent = fmtPeso(forPOTotal);
 
   // Render performance breakdown alongside main report
   renderPerformance();
 
   const tbody = document.getElementById('updTableBody');
   if (!data.length){
-    tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted py-4">No data</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14" class="text-center text-muted py-4">No data</td></tr>';
   } else {
     tbody.innerHTML = data.map(r => {
       const pctVal = num(r.Pct_Transacted) * 100;
@@ -2402,7 +2440,16 @@ function renderUpdate(){
             </select>
           </td>
           <td class="text-end">
-            <input type="number" step="0.01" class="form-control form-control-sm text-end" data-booking="\${bkNo}" value="\${amtVal}" onblur="onCancelAmtBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
+            <input type="number" step="0.01" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="On_Hand_Val" value="\${r.On_Hand_Val === '' || r.On_Hand_Val == null ? '' : r.On_Hand_Val}" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
+          </td>
+          <td class="text-end">
+            <input type="number" step="0.01" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="With_PO_Val" value="\${r.With_PO_Val === '' || r.With_PO_Val == null ? '' : r.With_PO_Val}" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
+          </td>
+          <td class="text-end">
+            <input type="number" step="0.01" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="For_PO_Val" value="\${r.For_PO_Val === '' || r.For_PO_Val == null ? '' : r.For_PO_Val}" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
+          </td>
+          <td class="text-end">
+            <input type="number" step="0.01" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="Amount_For_Cancel" value="\${amtVal}" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
           </td>
         </tr>
       \`;
@@ -2480,11 +2527,11 @@ function exportUpdateExcel(){
   const data = getUpdFiltered();
   if (!data.length){ toast('No data to export', 'error'); return; }
 
-  const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','% Transacted','Proceed','Amount_For_Cancel'];
-  const fields = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','Pct_Transacted','Proceed','Amount_For_Cancel'];
+  const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','% Transacted','Proceed','On Hand (Val)','With PO (Val)','For PO (Val)','Amount_For_Cancel'];
+  const fields = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','Pct_Transacted','Proceed','On_Hand_Val','With_PO_Val','For_PO_Val','Amount_For_Cancel'];
   const rows = [headers, ...data.map(r => fields.map(f => {
     if (['Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','Pct_Transacted'].includes(f)) return num(r[f]);
-    if (f === 'Amount_For_Cancel') return r[f] === '' || r[f] == null ? '' : num(r[f]);
+    if (['Amount_For_Cancel','On_Hand_Val','With_PO_Val','For_PO_Val'].includes(f)) return r[f] === '' || r[f] == null ? '' : num(r[f]);
     return r[f] || '';
   }))];
 
@@ -2505,9 +2552,9 @@ function exportUpdateExcel(){
     if (ws[addr]) ws[addr].s = headerStyle;
   }
   ws['!cols'] = headers.map(h => ({ wch: Math.max(h.length + 2, 15) }));
-  // Currency format for cols K-O (10-14) + Amount_For_Cancel (17), % format for col P (15)
+  // Currency format for cols K-O (10-14) + On_Hand/With_PO/For_PO (17,18,19) + Amount_For_Cancel (20), % for col P (15)
   for (let r = 1; r <= data.length; r++){
-    [10,11,12,13,14,17].forEach(c => {
+    [10,11,12,13,14,17,18,19,20].forEach(c => {
       const addr = XLSX.utils.encode_cell({ r, c });
       if (ws[addr]) ws[addr].z = '#,##0.00';
     });
