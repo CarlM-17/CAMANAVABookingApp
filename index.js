@@ -1117,6 +1117,10 @@ const HTML = `<!DOCTYPE html>
         <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #14b8a6"><div class="label">With PO (Val)</div><div class="value" id="updStatWithPO" style="color:#14b8a6">₱0</div></div></div>
         <div class="col-6 col-md-3 col-lg"><div class="card stat-card stat-mini" style="border-left:4px solid #ec4899"><div class="label">For PO (Val)</div><div class="value" id="updStatForPO" style="color:#ec4899">₱0</div></div></div>
       </div>
+      <div class="row g-2 mb-3 upd-stats">
+        <div class="col-6 col-md-6"><div class="card stat-card stat-mini" style="border-left:4px solid #dc2626"><div class="label">Balance - Cancel</div><div class="value" id="updStatBalCancel" style="color:#dc2626">₱0</div></div></div>
+        <div class="col-6 col-md-6"><div class="card stat-card stat-mini" style="border-left:4px solid #059669"><div class="label">On Hand + With PO + For PO</div><div class="value" id="updStatInvSum" style="color:#059669">₱0</div></div></div>
+      </div>
 
       <!-- PERFORMANCE BREAKDOWN -->
       <div class="card p-3 mb-3">
@@ -2443,6 +2447,8 @@ function renderUpdate(){
   document.getElementById('updStatOnHand').textContent = fmtPeso(onHandTotal);
   document.getElementById('updStatWithPO').textContent = fmtPeso(withPOTotal);
   document.getElementById('updStatForPO').textContent = fmtPeso(forPOTotal);
+  document.getElementById('updStatBalCancel').textContent = fmtPeso(balance - cancelTotal);
+  document.getElementById('updStatInvSum').textContent = fmtPeso(onHandTotal + withPOTotal + forPOTotal);
 
   // Render performance breakdown alongside main report
   renderPerformance();
