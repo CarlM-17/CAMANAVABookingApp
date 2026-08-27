@@ -2593,19 +2593,73 @@ function exportUpdateExcel(){
   const data = getUpdFiltered();
   if (!data.length){ toast('No data to export', 'error'); return; }
 
-  const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','% Transacted','Proceed','On Hand (Val)','With PO (Val)','For PO (Val)','Amount_For_Cancel','Reason for Cancellation'];
-  const fields = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Deals','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','Pct_Transacted','Proceed','On_Hand_Val','With_PO_Val','For_PO_Val','Amount_For_Cancel','Reason_For_Cancellation'];
-  const rows = [headers, ...data.map(r => fields.map(f => {
-    if (['Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','Pct_Transacted'].includes(f)) return num(r[f]);
-    if (['Amount_For_Cancel','On_Hand_Val','With_PO_Val','For_PO_Val'].includes(f)) return r[f] === '' || r[f] == null ? '' : num(r[f]);
-    return r[f] || '';
-  }))];
+  // Column layout per spec: A→X
+  const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','% Transacted','Proceed','Amount_For_Cancel','Balance Less for cancel','On Hand (Val)','With PO (Val)','For PO (Val)','To Transact','Reason for Cancellation'];
+  const NCOLS = headers.length;
 
+  // Build data rows (0-indexed columns match headers[])
+  const bodyRows = data.map(r => {
+    const booked = num(r.Total_Booked_Amount);
+    const netTrx = num(r.Transacted_Amount_Net);
+    const discTrx = num(r.Transacted_Discount_Net);
+    const grossTrx = num(r.Transacted_Amount_Gross);
+    const bal = num(r.Balance_Amount_Tobe_Transacted);
+    const pct = num(r.Pct_Transacted);
+    const amtCancel = r.Amount_For_Cancel === '' || r.Amount_For_Cancel == null ? '' : num(r.Amount_For_Cancel);
+    const onHand = r.On_Hand_Val === '' || r.On_Hand_Val == null ? '' : num(r.On_Hand_Val);
+    const withPO = r.With_PO_Val === '' || r.With_PO_Val == null ? '' : num(r.With_PO_Val);
+    const forPO = r.For_PO_Val === '' || r.For_PO_Val == null ? '' : num(r.For_PO_Val);
+    const balLessCancel = bal - (amtCancel === '' ? 0 : amtCancel);
+    const toTransact = (onHand === '' ? 0 : onHand) + (withPO === '' ? 0 : withPO) + (forPO === '' ? 0 : forPO);
+    return [
+      r.Date_Transacted || '',
+      r.Customer_No || '',
+      r.Name || '',
+      r.Region || '',
+      r.Area || '',
+      r.Store_Delivery || '',
+      r.Dept || '',
+      r.Supplier || '',
+      r.Booking_No || '',
+      r.Deals || '',
+      booked, netTrx, discTrx, grossTrx, bal, pct,
+      r.Proceed || '',
+      amtCancel,
+      balLessCancel,
+      onHand, withPO, forPO,
+      toTransact,
+      r.Reason_For_Cancellation || '',
+    ];
+  });
+
+  // Totals for numeric columns (0-indexed): K=10,L=11,M=12,N=13,O=14, R=17,S=18, T=19,U=20,V=21,W=22
+  const totalCols = [10,11,12,13,14,17,18,19,20,21,22];
+  const totals = new Array(NCOLS).fill('');
+  totals[9] = 'TOTAL';  // label in DEALS col (J)
+  totalCols.forEach(c => {
+    totals[c] = bodyRows.reduce((s, r) => s + (typeof r[c] === 'number' ? r[c] : 0), 0);
+  });
+
+  // Title row (dynamic date MM/DD/YYYY)
+  const d = new Date();
+  const titleDate = (d.getMonth()+1) + '/' + d.getDate() + '/' + d.getFullYear();
+  const title = 'CAMANAVA Booking Update as of ' + titleDate;
+  const titleRow = new Array(NCOLS).fill('');
+  titleRow[0] = title;
+
+  const rows = [titleRow, totals, headers, ...bodyRows];
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  const headerStyle = {
+
+  // Styles
+  const titleStyle = {
     fill: { patternType: 'solid', fgColor: { rgb: '006100' } },
-    font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 11 },
+    font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 14 },
     alignment: { horizontal: 'center', vertical: 'center' },
+  };
+  const totalStyle = {
+    fill: { patternType: 'solid', fgColor: { rgb: 'D9EAD3' } },
+    font: { bold: true, sz: 11 },
+    alignment: { horizontal: 'right', vertical: 'center' },
     border: {
       top: { style: 'thin', color: { rgb: '000000' } },
       bottom: { style: 'thin', color: { rgb: '000000' } },
@@ -2613,27 +2667,68 @@ function exportUpdateExcel(){
       right: { style: 'thin', color: { rgb: '000000' } }
     }
   };
-  for (let c = 0; c < headers.length; c++){
+  const headerStyle = {
+    fill: { patternType: 'solid', fgColor: { rgb: '006100' } },
+    font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 11 },
+    alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+    border: {
+      top: { style: 'thin', color: { rgb: '000000' } },
+      bottom: { style: 'thin', color: { rgb: '000000' } },
+      left: { style: 'thin', color: { rgb: '000000' } },
+      right: { style: 'thin', color: { rgb: '000000' } }
+    }
+  };
+
+  // Merge title across all columns
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: NCOLS - 1 } }];
+
+  // Apply title style
+  for (let c = 0; c < NCOLS; c++){
     const addr = XLSX.utils.encode_cell({ r: 0, c });
+    if (!ws[addr]) ws[addr] = { t: 's', v: '' };
+    ws[addr].s = titleStyle;
+  }
+  // Total row style + number formats
+  for (let c = 0; c < NCOLS; c++){
+    const addr = XLSX.utils.encode_cell({ r: 1, c });
+    if (!ws[addr]) ws[addr] = { t: 's', v: '' };
+    ws[addr].s = totalStyle;
+    if (totalCols.includes(c)) ws[addr].z = '#,##0.00';
+  }
+  // Header style
+  for (let c = 0; c < NCOLS; c++){
+    const addr = XLSX.utils.encode_cell({ r: 2, c });
     if (ws[addr]) ws[addr].s = headerStyle;
   }
-  ws['!cols'] = headers.map(h => ({ wch: Math.max(h.length + 2, 15) }));
-  // Currency format for cols K-O (10-14) + On_Hand/With_PO/For_PO (17,18,19) + Amount_For_Cancel (20), % for col P (15)
-  for (let r = 1; r <= data.length; r++){
-    [10,11,12,13,14,17,18,19,20].forEach(c => {
+
+  // Column widths
+  ws['!cols'] = headers.map(h => ({ wch: Math.max(h.length + 2, 14) }));
+  // Row heights
+  ws['!rows'] = [{ hpt: 24 }, { hpt: 20 }, { hpt: 32 }];
+
+  // Data cell formats
+  const dataStart = 3;  // 0-indexed row (row 4 in Excel)
+  for (let i = 0; i < bodyRows.length; i++){
+    const r = dataStart + i;
+    // Currency cols
+    [10,11,12,13,14,17,18,19,20,21,22].forEach(c => {
       const addr = XLSX.utils.encode_cell({ r, c });
       if (ws[addr]) ws[addr].z = '#,##0.00';
     });
+    // % col
     const pAddr = XLSX.utils.encode_cell({ r, c: 15 });
     if (ws[pAddr]) ws[pAddr].z = '0.0%';
   }
+
+  // Freeze panes: freeze title + totals + header (top 3 rows)
+  ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'BookingUpdate');
 
-  const d = new Date();
-  const stamp = \`\${d.getFullYear()}-\${String(d.getMonth()+1).padStart(2,'0')}-\${String(d.getDate()).padStart(2,'0')}_\${String(d.getHours()).padStart(2,'0')}-\${String(d.getMinutes()).padStart(2,'0')}\`;
-  XLSX.writeFile(wb, \`BookingUpdate_\${stamp}.xlsx\`);
-  toast(\`Exported \${data.length} rows\`);
+  const stamp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + '_' + String(d.getHours()).padStart(2,'0') + '-' + String(d.getMinutes()).padStart(2,'0');
+  XLSX.writeFile(wb, 'BookingUpdate_' + stamp + '.xlsx');
+  toast('Exported ' + data.length + ' rows');
 }
 
 async function initApp(){
