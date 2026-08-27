@@ -760,14 +760,14 @@ async function readProceed() {
     return rows.slice(1)
       .map((r, i) => ({
         rowIndex: i + 2,
-        Booking_No: r[0] || '',
-        Proceed: (r[1] || '').toUpperCase(),
-        Amount_For_Cancel: r[2] || '',
+        Booking_No: String(r[0] || '').trim(),
+        Proceed: String(r[1] || '').trim().toUpperCase(),
+        Amount_For_Cancel: r[2] == null ? '' : r[2],
         Updated_By: r[3] || '',
         Updated_Date: r[4] || '',
-        On_Hand_Val: r[5] || '',
-        With_PO_Val: r[6] || '',
-        For_PO_Val: r[7] || '',
+        On_Hand_Val: r[5] == null ? '' : r[5],
+        With_PO_Val: r[6] == null ? '' : r[6],
+        For_PO_Val: r[7] == null ? '' : r[7],
         Reason_For_Cancellation: r[8] || '',
       }))
       .filter(r => r.Booking_No);
@@ -796,11 +796,27 @@ app.post('/api/proceed', requireAuth, async (req, res) => {
     if (Proceed && Proceed !== 'Y' && Proceed !== 'N') return res.status(400).json({ error: 'Proceed must be Y or N' });
 
     const existing = await readProceed();
-    const match = existing.find(p => p.Booking_No === Booking_No);
+    const bnLC = Booking_No.toLowerCase();
+    const matches = existing.filter(p => p.Booking_No.toLowerCase() === bnLC);
     const row = [Booking_No, Proceed, Amount_For_Cancel, req.user.username, todayMDY(), On_Hand_Val, With_PO_Val, For_PO_Val, Reason_For_Cancellation];
 
-    if (match) {
-      await sheetsUpdateValues(`${PROCEED_SHEET}!A${match.rowIndex}:I${match.rowIndex}`, [row]);
+    if (matches.length) {
+      // Update the first match. If there are duplicates (from an earlier bug), keep only the first row's data.
+      await sheetsUpdateValues(`${PROCEED_SHEET}!A${matches[0].rowIndex}:I${matches[0].rowIndex}`, [row]);
+      // Delete any duplicate rows (from bottom to top so indices stay valid)
+      if (matches.length > 1) {
+        const meta = await sheetsGetMeta();
+        const ps = meta.sheets.find(s => s.properties.title === PROCEED_SHEET);
+        if (ps) {
+          const dupIndices = matches.slice(1).map(m => m.rowIndex).sort((a, b) => b - a);
+          const requests = dupIndices.map(idx => ({
+            deleteDimension: {
+              range: { sheetId: ps.properties.sheetId, dimension: 'ROWS', startIndex: idx - 1, endIndex: idx },
+            },
+          }));
+          await sheetsBatchUpdate(requests);
+        }
+      }
     } else {
       await sheetsAppendValues(`${PROCEED_SHEET}!A:I`, [row]);
     }
