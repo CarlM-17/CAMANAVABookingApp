@@ -708,13 +708,15 @@ async function readJustifications() {
     const res = await sheetsGetValues(`${JUSTIFICATION_SHEET}!A:D`);
     const rows = res.values || [];
     if (rows.length <= 1) return [];
-    return rows.slice(1).filter(r => r[0]).map((r, i) => ({
-      rowIndex: i + 2,
-      Customer_Name: r[0] || '',
-      Justification: r[1] || '',
-      Updated_By: r[2] || '',
-      Updated_Date: r[3] || '',
-    }));
+    return rows.slice(1)
+      .map((r, i) => ({
+        rowIndex: i + 2,
+        Customer_Name: r[0] || '',
+        Justification: r[1] || '',
+        Updated_By: r[2] || '',
+        Updated_Date: r[3] || '',
+      }))
+      .filter(r => r.Customer_Name);
   } catch (e) {
     console.error('[Justification] Sheet read error:', e.message);
     return [];
@@ -755,18 +757,20 @@ async function readProceed() {
     const res = await sheetsGetValues(`${PROCEED_SHEET}!A:I`);
     const rows = res.values || [];
     if (rows.length <= 1) return [];
-    return rows.slice(1).filter(r => r[0]).map((r, i) => ({
-      rowIndex: i + 2,
-      Booking_No: r[0] || '',
-      Proceed: (r[1] || '').toUpperCase(),
-      Amount_For_Cancel: r[2] || '',
-      Updated_By: r[3] || '',
-      Updated_Date: r[4] || '',
-      On_Hand_Val: r[5] || '',
-      With_PO_Val: r[6] || '',
-      For_PO_Val: r[7] || '',
-      Reason_For_Cancellation: r[8] || '',
-    }));
+    return rows.slice(1)
+      .map((r, i) => ({
+        rowIndex: i + 2,
+        Booking_No: r[0] || '',
+        Proceed: (r[1] || '').toUpperCase(),
+        Amount_For_Cancel: r[2] || '',
+        Updated_By: r[3] || '',
+        Updated_Date: r[4] || '',
+        On_Hand_Val: r[5] || '',
+        With_PO_Val: r[6] || '',
+        For_PO_Val: r[7] || '',
+        Reason_For_Cancellation: r[8] || '',
+      }))
+      .filter(r => r.Booking_No);
   } catch (e) {
     console.error('[Proceed] Sheet read error:', e.message);
     return [];
@@ -2434,7 +2438,7 @@ function renderUpdate(){
   const net = data.reduce((s,r) => s + num(r.Transacted_Amount_Net), 0);
   const balance = booked - net;
   const pct = booked > 0 ? (net / booked * 100) : 0;
-  const cancelTotal = data.reduce((s,r) => s + (r.Proceed === 'N' ? num(r.Amount_For_Cancel) : 0), 0);
+  const cancelTotal = data.reduce((s,r) => s + num(r.Amount_For_Cancel), 0);
   const onHandTotal = data.reduce((s,r) => s + num(r.On_Hand_Val), 0);
   const withPOTotal = data.reduce((s,r) => s + num(r.With_PO_Val), 0);
   const forPOTotal = data.reduce((s,r) => s + num(r.For_PO_Val), 0);
