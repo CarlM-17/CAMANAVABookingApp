@@ -754,7 +754,7 @@ const PROCEED_SHEET = 'BookingProceed';
 
 async function readProceed() {
   try {
-    const res = await sheetsGetValues(`${PROCEED_SHEET}!A:I`);
+    const res = await sheetsGetValues(`${PROCEED_SHEET}!A:K`);
     const rows = res.values || [];
     if (rows.length <= 1) return [];
     return rows.slice(1)
@@ -769,6 +769,8 @@ async function readProceed() {
         With_PO_Val: r[6] == null ? '' : r[6],
         For_PO_Val: r[7] == null ? '' : r[7],
         Reason_For_Cancellation: r[8] || '',
+        With_Order: String(r[9] || '').trim().toUpperCase(),
+        With_Order_Amount: r[10] == null ? '' : r[10],
       }))
       .filter(r => r.Booking_No);
   } catch (e) {
@@ -792,17 +794,20 @@ app.post('/api/proceed', requireAuth, async (req, res) => {
     const With_PO_Val = parseNum(req.body.With_PO_Val);
     const For_PO_Val = parseNum(req.body.For_PO_Val);
     const Reason_For_Cancellation = String(req.body.Reason_For_Cancellation || '').trim();
+    const With_Order = String(req.body.With_Order || '').trim().toUpperCase();
+    const With_Order_Amount = parseNum(req.body.With_Order_Amount);
     if (!Booking_No) return res.status(400).json({ error: 'Booking_No required' });
     if (Proceed && Proceed !== 'Y' && Proceed !== 'N') return res.status(400).json({ error: 'Proceed must be Y or N' });
+    if (With_Order && With_Order !== 'Y' && With_Order !== 'N') return res.status(400).json({ error: 'With Order must be Y or N' });
 
     const existing = await readProceed();
     const bnLC = Booking_No.toLowerCase();
     const matches = existing.filter(p => p.Booking_No.toLowerCase() === bnLC);
-    const row = [Booking_No, Proceed, Amount_For_Cancel, req.user.username, todayMDY(), On_Hand_Val, With_PO_Val, For_PO_Val, Reason_For_Cancellation];
+    const row = [Booking_No, Proceed, Amount_For_Cancel, req.user.username, todayMDY(), On_Hand_Val, With_PO_Val, For_PO_Val, Reason_For_Cancellation, With_Order, With_Order_Amount];
 
     if (matches.length) {
       // Update the first match. If there are duplicates (from an earlier bug), keep only the first row's data.
-      await sheetsUpdateValues(`${PROCEED_SHEET}!A${matches[0].rowIndex}:I${matches[0].rowIndex}`, [row]);
+      await sheetsUpdateValues(`${PROCEED_SHEET}!A${matches[0].rowIndex}:K${matches[0].rowIndex}`, [row]);
       // Delete any duplicate rows (from bottom to top so indices stay valid)
       if (matches.length > 1) {
         const meta = await sheetsGetMeta();
@@ -818,7 +823,7 @@ app.post('/api/proceed', requireAuth, async (req, res) => {
         }
       }
     } else {
-      await sheetsAppendValues(`${PROCEED_SHEET}!A:I`, [row]);
+      await sheetsAppendValues(`${PROCEED_SHEET}!A:K`, [row]);
     }
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -1189,7 +1194,14 @@ const HTML = `<!DOCTYPE html>
           <div class="col-6 col-md-2"><label class="form-label">Store</label><select class="form-select form-select-sm" id="updFilterStore"><option value="">All Stores</option></select></div>
           <div class="col-6 col-md-2"><label class="form-label">Supplier</label><select class="form-select form-select-sm" id="updFilterSupplier"><option value="">All Suppliers</option></select></div>
           <div class="col-6 col-md-2"><label class="form-label">Proceed</label><select class="form-select form-select-sm" id="updFilterProceed"><option value="">All</option><option value="Y">Y</option><option value="N">N</option><option value="_blank">(blank)</option></select></div>
+          <div class="col-6 col-md-2"><label class="form-label">For PO</label><select class="form-select form-select-sm" id="updFilterForPO"><option value="">All</option><option value="has">Has value</option><option value="blank">Blank / 0</option></select></div>
+          <div class="col-6 col-md-2"><label class="form-label">With Order</label><select class="form-select form-select-sm" id="updFilterWithOrder"><option value="">All</option><option value="Y">Y</option><option value="N">N</option><option value="_blank">(blank)</option></select></div>
           <div class="col-12 col-md-2 d-flex align-items-end"><button class="btn btn-sm btn-outline-secondary w-100" onclick="clearUpdFilters()"><i class="fas fa-times me-1"></i>Clear</button></div>
+        </div>
+        <div class="row g-2 mb-3 upd-stats">
+          <div class="col-6 col-md-4"><div class="card stat-card stat-mini" style="border-left:4px solid #0ea5e9"><div class="label">On Hand (Val)</div><div class="value" id="updRptOnHand" style="color:#0ea5e9">₱0</div></div></div>
+          <div class="col-6 col-md-4"><div class="card stat-card stat-mini" style="border-left:4px solid #14b8a6"><div class="label">With PO (Val)</div><div class="value" id="updRptWithPO" style="color:#14b8a6">₱0</div></div></div>
+          <div class="col-12 col-md-4"><div class="card stat-card stat-mini" style="border-left:4px solid #ec4899"><div class="label">For PO (Val)</div><div class="value" id="updRptForPO" style="color:#ec4899">₱0</div></div></div>
         </div>
         <div class="table-wrap" style="max-height:600px">
           <table class="table table-hover table-sm">
@@ -1207,6 +1219,7 @@ const HTML = `<!DOCTYPE html>
               <th class="text-end upd-sort" data-upd-sort="On_Hand_Val" style="cursor:pointer;user-select:none;min-width:130px">On Hand (Val) ⇅</th>
               <th class="text-end upd-sort" data-upd-sort="With_PO_Val" style="cursor:pointer;user-select:none;min-width:130px">With PO (Val) ⇅</th>
               <th class="text-end upd-sort" data-upd-sort="For_PO_Val" style="cursor:pointer;user-select:none;min-width:130px">For PO (Val) ⇅</th>
+              <th class="text-center upd-sort" data-upd-sort="With_Order" style="cursor:pointer;user-select:none;min-width:180px">With Order Y/N ⇅</th>
               <th class="text-end upd-sort" data-upd-sort="Amount_For_Cancel" style="cursor:pointer;user-select:none;min-width:140px">Amount for Cancel ⇅</th>
               <th class="upd-sort" data-upd-sort="Reason_For_Cancellation" style="cursor:pointer;user-select:none;min-width:220px">Reason for Cancellation ⇅</th>
             </tr></thead>
@@ -2311,6 +2324,8 @@ async function loadBookingUpdate(){
         With_PO_Val: asNum(p.With_PO_Val),
         For_PO_Val: asNum(p.For_PO_Val),
         Reason_For_Cancellation: p.Reason_For_Cancellation || '',
+        With_Order: p.With_Order || '',
+        With_Order_Amount: asNum(p.With_Order_Amount),
       };
     });
     populateUpdFilters();
@@ -2339,15 +2354,21 @@ function getUpdFiltered(){
   const fS = document.getElementById('updFilterStore').value;
   const fSup = document.getElementById('updFilterSupplier').value;
   const fP = document.getElementById('updFilterProceed').value;
+  const fForPO = document.getElementById('updFilterForPO').value;
+  const fWO = document.getElementById('updFilterWithOrder').value;
   let data = allUpdate;
   if (fA) data = data.filter(r => r.Area === fA);
   if (fS) data = data.filter(r => r.Store_Delivery === fS);
   if (fSup) data = data.filter(r => r.Supplier === fSup);
   if (fP === '_blank') data = data.filter(r => !r.Proceed);
   else if (fP) data = data.filter(r => r.Proceed === fP);
+  if (fForPO === 'has') data = data.filter(r => num(r.For_PO_Val) > 0);
+  else if (fForPO === 'blank') data = data.filter(r => !num(r.For_PO_Val));
+  if (fWO === '_blank') data = data.filter(r => !r.With_Order);
+  else if (fWO) data = data.filter(r => r.With_Order === fWO);
   if (q) data = data.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)));
   // Sort
-  const numericFields = ['Total_Booked_Amount','Transacted_Amount_Net','Balance_Amount_Tobe_Transacted','Pct_Transacted','Amount_For_Cancel','On_Hand_Val','With_PO_Val','For_PO_Val'];
+  const numericFields = ['Total_Booked_Amount','Transacted_Amount_Net','Balance_Amount_Tobe_Transacted','Pct_Transacted','Amount_For_Cancel','On_Hand_Val','With_PO_Val','For_PO_Val','With_Order_Amount'];
   data = [...data].sort((a, b) => {
     let va = a[updSortField], vb = b[updSortField];
     if (updSortField === 'Date_Transacted'){ va = parseMDY(va)||0; vb = parseMDY(vb)||0; }
@@ -2365,6 +2386,8 @@ function clearUpdFilters(){
   document.getElementById('updFilterStore').value = '';
   document.getElementById('updFilterSupplier').value = '';
   document.getElementById('updFilterProceed').value = '';
+  document.getElementById('updFilterForPO').value = '';
+  document.getElementById('updFilterWithOrder').value = '';
   document.getElementById('updSearch').value = '';
   renderUpdate();
 }
@@ -2383,6 +2406,8 @@ async function saveProceedRow(bookingNo, patch, silent){
     With_PO_Val: patch.With_PO_Val !== undefined ? patch.With_PO_Val : (row.With_PO_Val === '' ? '' : row.With_PO_Val),
     For_PO_Val: patch.For_PO_Val !== undefined ? patch.For_PO_Val : (row.For_PO_Val === '' ? '' : row.For_PO_Val),
     Reason_For_Cancellation: patch.Reason_For_Cancellation !== undefined ? patch.Reason_For_Cancellation : (row.Reason_For_Cancellation || ''),
+    With_Order: patch.With_Order !== undefined ? patch.With_Order : (row.With_Order || ''),
+    With_Order_Amount: patch.With_Order_Amount !== undefined ? patch.With_Order_Amount : (row.With_Order_Amount === '' ? '' : row.With_Order_Amount),
   };
   try {
     await api('POST', '/api/proceed', payload);
@@ -2392,6 +2417,8 @@ async function saveProceedRow(bookingNo, patch, silent){
     row.With_PO_Val = asNum(payload.With_PO_Val);
     row.For_PO_Val = asNum(payload.For_PO_Val);
     row.Reason_For_Cancellation = payload.Reason_For_Cancellation;
+    row.With_Order = payload.With_Order;
+    row.With_Order_Amount = asNum(payload.With_Order_Amount);
     proceedMap[key] = { ...payload };
     if (!silent) toast('Saved');
     renderUpdate();
@@ -2400,6 +2427,10 @@ async function saveProceedRow(bookingNo, patch, silent){
 
 function onProceedChange(el){
   saveProceedRow(el.dataset.booking, { Proceed: el.value }, true);
+}
+
+function onWithOrderChange(el){
+  saveProceedRow(el.dataset.booking, { With_Order: el.value }, true);
 }
 
 function onTextFieldBlur(el){
@@ -2468,6 +2499,10 @@ function renderUpdate(){
   document.getElementById('updStatOnHand').textContent = fmtPeso(onHandTotal);
   document.getElementById('updStatWithPO').textContent = fmtPeso(withPOTotal);
   document.getElementById('updStatForPO').textContent = fmtPeso(forPOTotal);
+  // Report-level cards (same totals, but placed inside the report card)
+  const rptOH = document.getElementById('updRptOnHand'); if (rptOH) rptOH.textContent = fmtPeso(onHandTotal);
+  const rptWP = document.getElementById('updRptWithPO'); if (rptWP) rptWP.textContent = fmtPeso(withPOTotal);
+  const rptFP = document.getElementById('updRptForPO'); if (rptFP) rptFP.textContent = fmtPeso(forPOTotal);
   document.getElementById('updStatBalCancel').textContent = fmtPeso(balance - cancelTotal);
   const invSum = onHandTotal + withPOTotal + forPOTotal;
   document.getElementById('updStatInvSum').textContent = fmtPeso(invSum);
@@ -2479,7 +2514,7 @@ function renderUpdate(){
 
   const tbody = document.getElementById('updTableBody');
   if (!data.length){
-    tbody.innerHTML = '<tr><td colspan="15" class="text-center text-muted py-4">No data</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="16" class="text-center text-muted py-4">No data</td></tr>';
   } else {
     tbody.innerHTML = data.map(r => {
       const pctVal = num(r.Pct_Transacted) * 100;
@@ -2515,6 +2550,16 @@ function renderUpdate(){
           <td class="text-end">
             <input type="text" inputmode="decimal" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="For_PO_Val" value="\${fmtNum(r.For_PO_Val)}" onfocus="onNumFieldFocus(this)" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
           </td>
+          <td>
+            <div class="d-flex gap-1">
+              <select class="form-select form-select-sm" style="width:60px" data-booking="\${bkNo}" onchange="onWithOrderChange(this)" \${!r.Booking_No ? 'disabled' : ''}>
+                <option value=""></option>
+                <option value="Y" \${r.With_Order === 'Y' ? 'selected' : ''}>Y</option>
+                <option value="N" \${r.With_Order === 'N' ? 'selected' : ''}>N</option>
+              </select>
+              <input type="text" inputmode="decimal" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="With_Order_Amount" value="\${fmtNum(r.With_Order_Amount)}" onfocus="onNumFieldFocus(this)" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" placeholder="Amount" \${!r.Booking_No ? 'disabled' : ''}>
+            </div>
+          </td>
           <td class="text-end">
             <input type="text" inputmode="decimal" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="Amount_For_Cancel" value="\${fmtNum(amtVal)}" onfocus="onNumFieldFocus(this)" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
           </td>
@@ -2544,6 +2589,8 @@ document.getElementById('updFilterArea').addEventListener('change', () => render
 document.getElementById('updFilterStore').addEventListener('change', () => renderUpdate());
 document.getElementById('updFilterSupplier').addEventListener('change', () => renderUpdate());
 document.getElementById('updFilterProceed').addEventListener('change', () => renderUpdate());
+document.getElementById('updFilterForPO').addEventListener('change', () => renderUpdate());
+document.getElementById('updFilterWithOrder').addEventListener('change', () => renderUpdate());
 
 function exportPerfExcel(){
   const data = getUpdFiltered();
@@ -2597,8 +2644,8 @@ function exportUpdateExcel(){
   const data = getUpdFiltered();
   if (!data.length){ toast('No data to export', 'error'); return; }
 
-  // Column layout per spec: A→X
-  const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','% Transacted','Proceed','Amount_For_Cancel','Balance Less for cancel','On Hand (Val)','With PO (Val)','For PO (Val)','To Transact','Reason for Cancellation'];
+  // Column layout: A→Z (With Order Y/N + Amount inserted after For PO)
+  const headers = ['Date_Transacted','CUSTOMER_NO','NAME','REGION','AREA','STORE_DELIVERY','DEPT','SUPPLIER','BOOKING #','DEALS','Total_Booked_Amount','Transacted_Amount_Net','Transacted_Discount_Net','Transacted_Amount_Gross','Balance_Amount_Tobe_Transacted','% Transacted','Proceed','Amount_For_Cancel','Balance Less for cancel','On Hand (Val)','With PO (Val)','For PO (Val)','With Order Y/N','With Order Amount','To Transact','Reason for Cancellation'];
   const NCOLS = headers.length;
 
   // Build data rows (0-indexed columns match headers[])
@@ -2613,6 +2660,7 @@ function exportUpdateExcel(){
     const onHand = r.On_Hand_Val === '' || r.On_Hand_Val == null ? '' : num(r.On_Hand_Val);
     const withPO = r.With_PO_Val === '' || r.With_PO_Val == null ? '' : num(r.With_PO_Val);
     const forPO = r.For_PO_Val === '' || r.For_PO_Val == null ? '' : num(r.For_PO_Val);
+    const woAmt = r.With_Order_Amount === '' || r.With_Order_Amount == null ? '' : num(r.With_Order_Amount);
     const balLessCancel = bal - (amtCancel === '' ? 0 : amtCancel);
     const toTransact = (onHand === '' ? 0 : onHand) + (withPO === '' ? 0 : withPO) + (forPO === '' ? 0 : forPO);
     return [
@@ -2631,13 +2679,15 @@ function exportUpdateExcel(){
       amtCancel,
       balLessCancel,
       onHand, withPO, forPO,
+      r.With_Order || '',
+      woAmt,
       toTransact,
       r.Reason_For_Cancellation || '',
     ];
   });
 
-  // Totals for numeric columns (0-indexed): K=10,L=11,M=12,N=13,O=14, R=17,S=18, T=19,U=20,V=21,W=22
-  const totalCols = [10,11,12,13,14,17,18,19,20,21,22];
+  // Totals for numeric columns (0-indexed): K=10,L=11,M=12,N=13,O=14, R=17,S=18, T=19,U=20,V=21, X=23, Y=24
+  const totalCols = [10,11,12,13,14,17,18,19,20,21,23,24];
   const totals = new Array(NCOLS).fill('');
   totals[9] = 'TOTAL';  // label in DEALS col (J)
   totalCols.forEach(c => {
@@ -2714,8 +2764,8 @@ function exportUpdateExcel(){
   const dataStart = 3;  // 0-indexed row (row 4 in Excel)
   for (let i = 0; i < bodyRows.length; i++){
     const r = dataStart + i;
-    // Currency cols
-    [10,11,12,13,14,17,18,19,20,21,22].forEach(c => {
+    // Currency cols (K-O booked/net/disc/gross/bal, R-V amt cancel/bal less/onhand/withpo/forpo, X-Y wo amt/toTransact)
+    [10,11,12,13,14,17,18,19,20,21,23,24].forEach(c => {
       const addr = XLSX.utils.encode_cell({ r, c });
       if (ws[addr]) ws[addr].z = '#,##0.00';
     });
