@@ -694,7 +694,10 @@ async function computeBookingUpdate() {
 app.get('/api/booking-update', requireAuth, async (req, res) => {
   try {
     const data = await computeBookingUpdate();
-    res.json(data);
+    const allowed = await resolveStoreAccess(req.user);
+    if (allowed === null) return res.json(data);
+    const set = new Set(allowed.map(s => s.toLowerCase()));
+    res.json(data.filter(r => set.has(String(r.Store_Delivery).toLowerCase())));
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
