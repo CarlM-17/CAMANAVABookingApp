@@ -749,6 +749,69 @@ app.post('/api/justifications', requireAuth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
+// ===== APP SETTINGS (admin-controlled toggles) =====
+const SETTINGS_SHEET = 'AppSettings';
+let settingsCache = { data: null, ts: 0 };
+const SETTINGS_CACHE_MS = 30 * 1000;
+
+async function readSettings() {
+  if (settingsCache.data && Date.now() - settingsCache.ts < SETTINGS_CACHE_MS) return settingsCache.data;
+  const defaults = { cancel_enabled: true };
+  try {
+    const res = await sheetsGetValues(`${SETTINGS_SHEET}!A:B`);
+    const rows = res.values || [];
+    const map = { ...defaults };
+    rows.slice(1).forEach(r => {
+      if (!r[0]) return;
+      const k = String(r[0]).trim();
+      const v = String(r[1] || '').trim().toLowerCase();
+      if (v === 'true' || v === 'false') map[k] = v === 'true';
+      else map[k] = r[1];
+    });
+    settingsCache.data = map;
+    settingsCache.ts = Date.now();
+    return map;
+  } catch (e) {
+    console.error('[Settings] Sheet read error, using defaults:', e.message);
+    settingsCache.data = defaults;
+    settingsCache.ts = Date.now();
+    return defaults;
+  }
+}
+
+async function writeSetting(key, value) {
+  // Locate existing key or append new
+  let rows = [];
+  try {
+    const res = await sheetsGetValues(`${SETTINGS_SHEET}!A:B`);
+    rows = res.values || [];
+  } catch (e) { throw new Error('AppSettings sheet not found. Create it with headers: Key | Value'); }
+  const idx = rows.slice(1).findIndex(r => r[0] && String(r[0]).trim() === key);
+  const strVal = typeof value === 'boolean' ? String(value) : String(value);
+  if (idx >= 0) {
+    const rowIndex = idx + 2;
+    await sheetsUpdateValues(`${SETTINGS_SHEET}!A${rowIndex}:B${rowIndex}`, [[key, strVal]]);
+  } else {
+    await sheetsAppendValues(`${SETTINGS_SHEET}!A:B`, [[key, strVal]]);
+  }
+  settingsCache.ts = 0;  // invalidate
+}
+
+app.get('/api/settings', requireAuth, async (req, res) => {
+  try { res.json(await readSettings()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/settings', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Only admins can change settings' });
+    const { key, value } = req.body;
+    if (!key) return res.status(400).json({ error: 'key required' });
+    await writeSetting(String(key).trim(), value);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
 // ===== PROCEED / AMOUNT FOR CANCEL (per booking) =====
 const PROCEED_SHEET = 'BookingProceed';
 
@@ -801,9 +864,24 @@ app.post('/api/proceed', requireAuth, async (req, res) => {
     if (With_Order && With_Order !== 'Y' && With_Order !== 'N') return res.status(400).json({ error: 'With Order must be Y or N' });
 
     const existing = await readProceed();
+    // Enforce cancel_enabled setting: if disabled, do not accept changes to Amount_For_Cancel
+    let effectiveCancel = Amount_For_Cancel;
+    try {
+      const settings = await readSettings();
+      if (settings.cancel_enabled === false) {
+        const prior = existing.find(p => p.Booking_No.toLowerCase() === Booking_No.toLowerCase());
+        const priorVal = prior ? (prior.Amount_For_Cancel === '' || prior.Amount_For_Cancel == null ? '' : prior.Amount_For_Cancel) : '';
+        const newNum = Amount_For_Cancel === '' ? '' : Number(Amount_For_Cancel);
+        const priorNum = priorVal === '' ? '' : Number(priorVal);
+        if (String(newNum) !== String(priorNum)) {
+          return res.status(403).json({ error: 'Amount for Cancel editing is currently disabled by admin' });
+        }
+        effectiveCancel = priorVal;  // preserve prior value regardless
+      }
+    } catch (e) { /* if settings fail, allow */ }
     const bnLC = Booking_No.toLowerCase();
     const matches = existing.filter(p => p.Booking_No.toLowerCase() === bnLC);
-    const row = [Booking_No, Proceed, Amount_For_Cancel, req.user.username, todayMDY(), On_Hand_Val, With_PO_Val, For_PO_Val, Reason_For_Cancellation, With_Order, With_Order_Amount];
+    const row = [Booking_No, Proceed, effectiveCancel, req.user.username, todayMDY(), On_Hand_Val, With_PO_Val, For_PO_Val, Reason_For_Cancellation, With_Order, With_Order_Amount];
 
     if (matches.length) {
       // Update the first match. If there are duplicates (from an earlier bug), keep only the first row's data.
@@ -1182,7 +1260,13 @@ const HTML = `<!DOCTYPE html>
 
       <div class="card p-3">
         <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-          <h6 class="m-0">Booking Update Report</h6>
+          <div class="d-flex align-items-center gap-3 flex-wrap">
+            <h6 class="m-0">Booking Update Report</h6>
+            <div id="cancelToggleWrap" class="form-check form-switch m-0" style="display:none">
+              <input class="form-check-input" type="checkbox" id="cancelToggle" onchange="toggleCancelEnabled(this)">
+              <label class="form-check-label small" for="cancelToggle" id="cancelToggleLabel">Amount for Cancel: <span id="cancelToggleState" style="font-weight:600">Enabled</span></label>
+            </div>
+          </div>
           <div class="d-flex gap-2 flex-wrap">
             <input type="text" class="form-control form-control-sm" id="updSearch" placeholder="Search..." style="width:180px">
             <button class="btn btn-sm btn-success" onclick="exportUpdateExcel()"><i class="fas fa-file-excel me-1"></i>Export Excel</button>
@@ -2308,10 +2392,48 @@ async function loadProceed(){
   } catch(e){ console.error('Failed to load proceed data:', e); }
 }
 
+let appSettings = { cancel_enabled: true };
+async function loadSettings(){
+  try {
+    appSettings = await api('GET', '/api/settings');
+  } catch(e){ console.error('Failed to load settings:', e); }
+  // Show/apply toggle
+  const wrap = document.getElementById('cancelToggleWrap');
+  const cb = document.getElementById('cancelToggle');
+  const st = document.getElementById('cancelToggleState');
+  if (wrap && cb){
+    wrap.style.display = currentUser && currentUser.role === 'admin' ? '' : 'none';
+    cb.checked = appSettings.cancel_enabled !== false;
+    if (st){
+      st.textContent = cb.checked ? 'Enabled' : 'Disabled';
+      st.style.color = cb.checked ? 'var(--success)' : 'var(--danger)';
+    }
+  }
+}
+
+async function toggleCancelEnabled(el){
+  const desired = !!el.checked;
+  showSpinner(true);
+  try {
+    await api('POST', '/api/settings', { key: 'cancel_enabled', value: desired });
+    appSettings.cancel_enabled = desired;
+    const st = document.getElementById('cancelToggleState');
+    if (st){
+      st.textContent = desired ? 'Enabled' : 'Disabled';
+      st.style.color = desired ? 'var(--success)' : 'var(--danger)';
+    }
+    toast('Amount for Cancel ' + (desired ? 'enabled' : 'disabled'));
+    renderUpdate();
+  } catch(e){
+    toast(e.message, 'error');
+    el.checked = !desired;  // revert on failure
+  } finally { showSpinner(false); }
+}
+
 async function loadBookingUpdate(){
   showSpinner(true);
   try {
-    const [data] = await Promise.all([api('GET', '/api/booking-update'), loadJustifications(), loadProceed()]);
+    const [data] = await Promise.all([api('GET', '/api/booking-update'), loadJustifications(), loadProceed(), loadSettings()]);
     // Merge proceed data into each row
     const asNum = v => (v === '' || v == null ? '' : num(v));
     allUpdate = data.map(r => {
@@ -2561,7 +2683,7 @@ function renderUpdate(){
             </div>
           </td>
           <td class="text-end">
-            <input type="text" inputmode="decimal" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="Amount_For_Cancel" value="\${fmtNum(amtVal)}" onfocus="onNumFieldFocus(this)" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
+            <input type="text" inputmode="decimal" class="form-control form-control-sm text-end" data-booking="\${bkNo}" data-field="Amount_For_Cancel" value="\${fmtNum(amtVal)}" onfocus="onNumFieldFocus(this)" onblur="onNumFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${(!r.Booking_No || appSettings.cancel_enabled === false) ? 'disabled' : ''} \${appSettings.cancel_enabled === false ? 'title="Editing disabled by admin"' : ''}>
           </td>
           <td>
             <input type="text" class="form-control form-control-sm" data-booking="\${bkNo}" data-field="Reason_For_Cancellation" value="\${(r.Reason_For_Cancellation || '').replace(/"/g,'&quot;')}" onblur="onTextFieldBlur(this)" onkeydown="if(event.key==='Enter')this.blur()" \${!r.Booking_No ? 'disabled' : ''}>
