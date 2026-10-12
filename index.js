@@ -12,6 +12,20 @@ const app = express();
 
 app.use(express.json());
 
+// Serve any .png/.ico from the project directory directly (fallback for icon serving)
+app.use(express.static(__dirname, {
+  extensions: false,
+  index: false,
+  dotfiles: 'ignore',
+  maxAge: '1y',
+  immutable: true,
+  setHeaders: (res, filePath) => {
+    if (/\.(png|ico|svg|jpg|jpeg|webp)$/i.test(filePath)) {
+      res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  },
+}));
+
 // ===== PWA ASSETS =====
 function serveIcon(filename) {
   return (req, res) => {
@@ -25,8 +39,8 @@ function serveIcon(filename) {
     res.sendFile(fp, err => { if (err) { console.error('[Icon] sendFile error:', err.message); if (!res.headersSent) res.status(500).send('Icon send error'); } });
   };
 }
-app.get('/icons/booking.png', serveIcon('Booking_icon.png'));
-app.get('/icons/dashboard.png', serveIcon('Dashboard_icon.png'));
+app.get('/Booking_icon.png', serveIcon('Booking_icon.png'));
+app.get('/Dashboard_icon.png', serveIcon('Dashboard_icon.png'));
 // Case-insensitive fallbacks in case GitHub normalized the filename case
 app.get('/Booking_icon.png', serveIcon('Booking_icon.png'));
 app.get('/Dashboard_icon.png', serveIcon('Dashboard_icon.png'));
@@ -51,9 +65,9 @@ app.get('/manifest.json', (req, res) => {
     background_color: '#f3f6f3',
     theme_color: '#14532d',
     icons: [
-      { src: '/icons/booking.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-      { src: '/icons/booking.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-      { src: '/icons/booking.png', sizes: '1254x1254', type: 'image/png', purpose: 'maskable' },
+      { src: '/Booking_icon.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/Booking_icon.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/Booking_icon.png', sizes: '1254x1254', type: 'image/png', purpose: 'maskable' },
     ],
     categories: ['business', 'productivity'],
   });
@@ -63,8 +77,8 @@ app.get('/sw.js', (req, res) => {
   res.set('Content-Type', 'application/javascript');
   res.set('Service-Worker-Allowed', '/');
   res.send(`
-    const CACHE = 'camanava-v3-green';
-    const SHELL = ['/icons/booking.png', '/icons/dashboard.png', '/manifest.json'];
+    const CACHE = 'camanava-v4-green';
+    const SHELL = ['/Booking_icon.png', '/Dashboard_icon.png', '/manifest.json'];
     self.addEventListener('install', e => {
       self.skipWaiting();
       e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).catch(()=>{}));
@@ -1177,8 +1191,8 @@ const HTML = `<!DOCTYPE html>
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="CaMaNaVa Booking">
-<link rel="apple-touch-icon" href="/icons/booking.png">
-<link rel="icon" type="image/png" href="/icons/booking.png">
+<link rel="apple-touch-icon" href="/Booking_icon.png">
+<link rel="icon" type="image/png" href="/Booking_icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -1306,7 +1320,7 @@ const HTML = `<!DOCTYPE html>
 <div class="login-screen" id="loginScreen">
   <div class="login-box">
     <div class="text-center mb-3">
-      <img src="/icons/booking.png" alt="" style="width:64px;height:64px;border-radius:16px;box-shadow:0 8px 20px rgba(15,23,42,.15)">
+      <img src="/Booking_icon.png" alt="" style="width:64px;height:64px;border-radius:16px;box-shadow:0 8px 20px rgba(15,23,42,.15)">
     </div>
     <h4 class="text-center">CaMaNaVa Booking</h4>
     <div class="sub text-center">Sign in to continue</div>
@@ -1321,7 +1335,7 @@ const HTML = `<!DOCTYPE html>
 
 <div class="navbar-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
   <div class="d-flex align-items-center gap-2">
-    <img src="/icons/dashboard.png" alt="CaMaNaVa Booking Management" class="brand-logo">
+    <img src="/Dashboard_icon.png" alt="CaMaNaVa Booking Management" class="brand-logo">
   </div>
   <div class="d-flex align-items-center gap-2 flex-wrap">
     <button class="install-btn" id="installBtn" onclick="installPWA()" title="Install app"><i class="fas fa-download"></i> Install</button>
