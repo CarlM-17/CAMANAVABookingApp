@@ -13,17 +13,30 @@ const app = express();
 app.use(express.json());
 
 // ===== PWA ASSETS =====
-app.get('/icons/booking.png', (req, res) => {
-  res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  res.sendFile(path.join(__dirname, 'Booking_icon.png'));
-});
-app.get('/icons/dashboard.png', (req, res) => {
-  res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  res.sendFile(path.join(__dirname, 'Dashboard_icon.png'));
-});
-app.get('/favicon.ico', (req, res) => {
-  res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  res.sendFile(path.join(__dirname, 'Booking_icon.png'));
+function serveIcon(filename) {
+  return (req, res) => {
+    const fp = path.join(__dirname, filename);
+    if (!fs.existsSync(fp)) {
+      console.error('[Icon] File not found:', fp);
+      return res.status(404).send('Icon file not found on server: ' + filename);
+    }
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.set('Content-Type', 'image/png');
+    res.sendFile(fp, err => { if (err) { console.error('[Icon] sendFile error:', err.message); if (!res.headersSent) res.status(500).send('Icon send error'); } });
+  };
+}
+app.get('/icons/booking.png', serveIcon('Booking_icon.png'));
+app.get('/icons/dashboard.png', serveIcon('Dashboard_icon.png'));
+// Case-insensitive fallbacks in case GitHub normalized the filename case
+app.get('/Booking_icon.png', serveIcon('Booking_icon.png'));
+app.get('/Dashboard_icon.png', serveIcon('Dashboard_icon.png'));
+app.get('/favicon.ico', serveIcon('Booking_icon.png'));
+// Diagnostic endpoint: visit /_icons-check to see what files the server sees
+app.get('/_icons-check', (req, res) => {
+  try {
+    const files = fs.readdirSync(__dirname).filter(f => /\.(png|jpg|jpeg|svg|ico)$/i.test(f));
+    res.json({ __dirname, images: files, hasBookingIcon: fs.existsSync(path.join(__dirname, 'Booking_icon.png')), hasDashboardIcon: fs.existsSync(path.join(__dirname, 'Dashboard_icon.png')) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/manifest.json', (req, res) => {
@@ -1161,6 +1174,7 @@ const HTML = `<!DOCTYPE html>
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#14532d">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="CaMaNaVa Booking">
 <link rel="apple-touch-icon" href="/icons/booking.png">
