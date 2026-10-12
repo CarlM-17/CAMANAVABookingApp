@@ -35,8 +35,8 @@ app.get('/manifest.json', (req, res) => {
     scope: '/',
     display: 'standalone',
     orientation: 'portrait-primary',
-    background_color: '#f5f7fa',
-    theme_color: '#1e293b',
+    background_color: '#f3f6f3',
+    theme_color: '#14532d',
     icons: [
       { src: '/icons/booking.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
       { src: '/icons/booking.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
@@ -50,7 +50,7 @@ app.get('/sw.js', (req, res) => {
   res.set('Content-Type', 'application/javascript');
   res.set('Service-Worker-Allowed', '/');
   res.send(`
-    const CACHE = 'camanava-v2';
+    const CACHE = 'camanava-v3-green';
     const SHELL = ['/icons/booking.png', '/icons/dashboard.png', '/manifest.json'];
     self.addEventListener('install', e => {
       self.skipWaiting();
@@ -1159,7 +1159,7 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CaMaNaVa Booking Management</title>
 <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#1e293b">
+<meta name="theme-color" content="#14532d">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="CaMaNaVa Booking">
@@ -1175,18 +1175,20 @@ const HTML = `<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.0/umd/index.min.js"></script>
 <style>
   :root{
-    --bg:#f1f5f9;--card:#ffffff;--surface-alt:#f8fafc;--text:#0f172a;--text-2:#334155;--muted:#64748b;
-    --border:#e2e8f0;--border-strong:#cbd5e1;
-    --primary:#1e40af;--primary-hover:#1e3a8a;--primary-soft:#eff6ff;
-    --accent:#0ea5e9;--success:#059669;--warning:#d97706;--danger:#dc2626;--info:#0284c7;
-    --input:#ffffff;--shadow-sm:0 1px 2px rgba(15,23,42,.05);--shadow-md:0 1px 3px rgba(15,23,42,.08),0 1px 2px rgba(15,23,42,.04);
+    --bg:#f3f6f3;--card:#ffffff;--surface-alt:#f0f5ef;--text:#0b1f0e;--text-2:#1f3a24;--muted:#5b6b5e;
+    --border:#dbe4dc;--border-strong:#b9c9bb;
+    --primary:#14532d;--primary-hover:#0f3d21;--primary-soft:#dcfce7;
+    --accent:#eab308;--accent-hover:#ca8a04;--accent-soft:#fef9c3;
+    --success:#15803d;--warning:#d97706;--danger:#b91c1c;--info:#0369a1;
+    --input:#ffffff;--shadow-sm:0 1px 2px rgba(20,83,45,.06);--shadow-md:0 1px 3px rgba(20,83,45,.1),0 1px 2px rgba(20,83,45,.05);
     --radius:10px;--radius-sm:6px;--radius-lg:14px;
   }
   [data-theme="dark"]{
-    --bg:#0b1220;--card:#111827;--surface-alt:#0f172a;--text:#f1f5f9;--text-2:#cbd5e1;--muted:#94a3b8;
-    --border:#1e293b;--border-strong:#334155;
-    --primary:#60a5fa;--primary-hover:#3b82f6;--primary-soft:#1e3a8a;
-    --input:#0b1220;--shadow-sm:0 1px 2px rgba(0,0,0,.3);--shadow-md:0 1px 3px rgba(0,0,0,.4),0 1px 2px rgba(0,0,0,.3);
+    --bg:#0a1510;--card:#122319;--surface-alt:#0d1b13;--text:#e8f1e9;--text-2:#c3d0c5;--muted:#8ea592;
+    --border:#1e3123;--border-strong:#2d4635;
+    --primary:#22c55e;--primary-hover:#16a34a;--primary-soft:#14532d;
+    --accent:#facc15;--accent-hover:#eab308;--accent-soft:#422006;
+    --input:#0a1510;--shadow-sm:0 1px 2px rgba(0,0,0,.35);--shadow-md:0 1px 3px rgba(0,0,0,.45),0 1px 2px rgba(0,0,0,.35);
   }
   *{box-sizing:border-box}
   body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;transition:background .2s}
@@ -1262,8 +1264,8 @@ const HTML = `<!DOCTYPE html>
   .badge{font-weight:600;font-size:10.5px;padding:3px 8px;border-radius:999px;letter-spacing:.3px}
   .bg-success{background:var(--success)!important}.bg-warning{background:var(--warning)!important;color:#fff!important}.bg-danger{background:var(--danger)!important}.bg-secondary{background:var(--muted)!important}
   @media(max-width:768px){.stat-card .value{font-size:19px}.table td,.table th{font-size:11.5px;padding:7px 8px}.navbar-custom h5{font-size:14px}.brand-logo{height:24px}}
-  .owner-badge{position:fixed;bottom:12px;right:12px;background:linear-gradient(135deg,#1e40af,#0ea5e9);color:#fff;padding:5px 12px;border-radius:999px;font-size:10.5px;font-weight:600;letter-spacing:.4px;box-shadow:0 4px 12px rgba(30,64,175,.25);z-index:9997;user-select:none;opacity:.9}
-  .login-screen{position:fixed;inset:0;background:linear-gradient(135deg,#0f172a 0%,#1e40af 60%,#0ea5e9 100%);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px}
+  .owner-badge{position:fixed;bottom:12px;right:12px;background:linear-gradient(135deg,#14532d,#eab308);color:#fff;padding:5px 12px;border-radius:999px;font-size:10.5px;font-weight:600;letter-spacing:.4px;box-shadow:0 4px 12px rgba(20,83,45,.3);z-index:9997;user-select:none;opacity:.95}
+  .login-screen{position:fixed;inset:0;background:linear-gradient(135deg,#0b1f0e 0%,#14532d 55%,#eab308 100%);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px}
   .login-box{background:var(--card);border-radius:var(--radius-lg);padding:36px 32px;width:100%;max-width:400px;box-shadow:0 25px 70px rgba(0,0,0,.35)}
   .login-box h4{margin-bottom:4px;color:var(--text);font-weight:700;letter-spacing:-.02em}
   .login-box .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
