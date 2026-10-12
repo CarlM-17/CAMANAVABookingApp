@@ -185,7 +185,7 @@ function upper(v) { return typeof v === 'string' ? v.toUpperCase() : v; }
 
 // ===== READ BOOKINGS =====
 async function readBookings() {
-  const res = await sheetsGetValues(`${MAIN_SHEET}!A:N`);
+  const res = await sheetsGetValues(`${MAIN_SHEET}!A:O`);
   const rows = res.values || [];
   if (rows.length <= 1) return [];
 
@@ -205,6 +205,7 @@ async function readBookings() {
     Remarks: r[11] || '',
     Logged_By: r[12] || '',
     Last_Edited_By: r[13] || '',
+    Event: String(r[14] || '').trim(),
   }));
 }
 
@@ -314,7 +315,10 @@ app.get('/api/lookups', requireAuth, async (req, res) => {
 
 app.get('/api/bookings', requireAuth, async (req, res) => {
   try {
-    const all = await readBookings();
+    let all = await readBookings();
+    // Optional event filter
+    const ev = String(req.query.event || '').trim().toLowerCase();
+    if (ev) all = all.filter(b => String(b.Event || '').toLowerCase() === ev);
     const allowed = await resolveStoreAccess(req.user);
     if (allowed === null) return res.json(all);
     const set = new Set(allowed.map(s => s.toLowerCase()));
@@ -331,13 +335,17 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
       if (b[f]) b[f] = upper(b[f]);
     });
 
-    const required = ['Customer_Name','Customer_No','Region','Area','Store_Delivery','Dept','Supplier','Deals','Total_Booked_Amount'];
+    const required = ['Customer_Name','Customer_No','Region','Area','Store_Delivery','Dept','Supplier','Deals','Total_Booked_Amount','Event'];
     for (const f of required) {
       if (!b[f] && b[f] !== 0) return res.status(400).json({ error: `${f} is required` });
     }
     if (isNaN(parseFloat(b.Total_Booked_Amount))) {
       return res.status(400).json({ error: 'Total Booked Amount must be a number' });
     }
+
+    // Event validation + archive check
+    const evCheck = await enforceEventWrite(req.user, b.Event);
+    if (!evCheck.ok) return res.status(403).json({ error: evCheck.error });
 
     // Enforce store access
     const allowed = await resolveStoreAccess(req.user);
@@ -348,11 +356,11 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
       }
     }
 
-    // Duplicate check only if Booking_No is provided
+    // Duplicate check only if Booking_No is provided (within the same event)
     if (b.Booking_No) {
       const existing = await readBookings();
-      if (existing.some(r => String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase())) {
-        return res.status(409).json({ error: `Booking# ${b.Booking_No} already exists` });
+      if (existing.some(r => String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase() && String(r.Event).toLowerCase() === String(b.Event).toLowerCase())) {
+        return res.status(409).json({ error: `Booking# ${b.Booking_No} already exists in event "${b.Event}"` });
       }
     }
 
@@ -371,9 +379,10 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
       b.Remarks || '',
       req.user.username,  // Logged_By
       '',                  // Last_Edited_By empty on create
+      b.Event,
     ];
 
-    await sheetsAppendValues(`${MAIN_SHEET}!A:N`, [row]);
+    await sheetsAppendValues(`${MAIN_SHEET}!A:O`, [row]);
 
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -394,6 +403,11 @@ app.put('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'You can only edit your own bookings' });
     }
 
+    // Event required + archive check (preserve original event if not provided)
+    const effectiveEvent = b.Event || target.Event;
+    const evCheck = await enforceEventWrite(req.user, effectiveEvent);
+    if (!evCheck.ok) return res.status(403).json({ error: evCheck.error });
+
     // Enforce store access on the edited store too
     const allowed = await resolveStoreAccess(req.user);
     if (allowed !== null) {
@@ -403,8 +417,8 @@ app.put('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
       }
     }
 
-    if (b.Booking_No && existing.some(r => r.rowIndex !== rowIndex && String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase())) {
-      return res.status(409).json({ error: `Booking# ${b.Booking_No} already exists` });
+    if (b.Booking_No && existing.some(r => r.rowIndex !== rowIndex && String(r.Booking_No).toLowerCase() === String(b.Booking_No).toLowerCase() && String(r.Event).toLowerCase() === String(effectiveEvent).toLowerCase())) {
+      return res.status(409).json({ error: `Booking# ${b.Booking_No} already exists in event "${effectiveEvent}"` });
     }
 
     const row = [
@@ -422,9 +436,10 @@ app.put('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
       b.Remarks || '',
       target.Logged_By,         // preserve original creator
       req.user.username,         // Last_Edited_By
+      effectiveEvent,
     ];
 
-    await sheetsUpdateValues(`${MAIN_SHEET}!A${rowIndex}:N${rowIndex}`, [row]);
+    await sheetsUpdateValues(`${MAIN_SHEET}!A${rowIndex}:O${rowIndex}`, [row]);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
@@ -456,7 +471,7 @@ app.delete('/api/bookings/:rowIndex', requireAuth, async (req, res) => {
 
 // ===== TRANSACTIONS =====
 async function readTransactions() {
-  const res = await sheetsGetValues(`${TRX_SHEET}!A:P`);
+  const res = await sheetsGetValues(`${TRX_SHEET}!A:Q`);
   const rows = res.values || [];
   if (rows.length <= 1) return [];
 
@@ -478,12 +493,15 @@ async function readTransactions() {
     TRX_Number: r[13] || '',
     Logged_By: r[14] || '',
     Last_Edited_By: r[15] || '',
+    Event: String(r[16] || '').trim(),
   }));
 }
 
 app.get('/api/transactions', requireAuth, async (req, res) => {
   try {
-    const all = await readTransactions();
+    let all = await readTransactions();
+    const ev = String(req.query.event || '').trim().toLowerCase();
+    if (ev) all = all.filter(t => String(t.Event || '').toLowerCase() === ev);
     const allowed = await resolveStoreAccess(req.user);
     if (allowed === null) return res.json(all);
     const set = new Set(allowed.map(s => s.toLowerCase()));
@@ -497,9 +515,11 @@ app.get('/api/booking-lookup/:bookingNo', requireAuth, async (req, res) => {
   try {
     const target = String(req.params.bookingNo).trim().toLowerCase();
     if (!target) return res.status(400).json({ error: 'Booking# required' });
+    const ev = String(req.query.event || '').trim().toLowerCase();
     const all = await readBookings();
-    const b = all.find(x => String(x.Booking_No).trim().toLowerCase() === target);
-    if (!b) return res.status(404).json({ error: `Booking# ${req.params.bookingNo} not found in Booking sheet` });
+    const matches = all.filter(x => String(x.Booking_No).trim().toLowerCase() === target);
+    const b = ev ? matches.find(x => String(x.Event).toLowerCase() === ev) : matches[0];
+    if (!b) return res.status(404).json({ error: `Booking# ${req.params.bookingNo} not found${ev ? ' in selected event' : ''}` });
 
     // Enforce store access
     const allowed = await resolveStoreAccess(req.user);
@@ -518,12 +538,15 @@ app.post('/api/transactions', requireAuth, async (req, res) => {
     const b = req.body;
     Object.keys(b).forEach(k => { b[k] = trim(b[k]); });
 
-    const required = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Transacted_Amount_Gross','Transacted_Amount_Net','TRX_Number'];
+    const required = ['Date_Transacted','Customer_No','Name','Region','Area','Store_Delivery','Dept','Supplier','Booking_No','Transacted_Amount_Gross','Transacted_Amount_Net','TRX_Number','Event'];
     for (const f of required) {
       if (!b[f] && b[f] !== 0) return res.status(400).json({ error: `${f} is required` });
     }
     if (isNaN(parseFloat(b.Transacted_Amount_Gross))) return res.status(400).json({ error: 'Gross amount must be a number' });
     if (b.Transacted_Discount_Net && isNaN(parseFloat(b.Transacted_Discount_Net))) return res.status(400).json({ error: 'Discount must be a number' });
+
+    const evCheck = await enforceEventWrite(req.user, b.Event);
+    if (!evCheck.ok) return res.status(403).json({ error: evCheck.error });
 
     // Enforce store access
     const allowedT = await resolveStoreAccess(req.user);
@@ -555,9 +578,10 @@ app.post('/api/transactions', requireAuth, async (req, res) => {
       b.TRX_Number,
       req.user.username,  // Logged_By
       '',                  // Last_Edited_By
+      b.Event,
     ];
 
-    await sheetsAppendValues(`${TRX_SHEET}!A:P`, [row]);
+    await sheetsAppendValues(`${TRX_SHEET}!A:Q`, [row]);
 
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -576,6 +600,11 @@ app.put('/api/transactions/:rowIndex', requireAuth, async (req, res) => {
     if (req.user.role !== 'admin' && target.Logged_By.toLowerCase() !== req.user.username) {
       return res.status(403).json({ error: 'You can only edit your own transactions' });
     }
+
+    // Event check
+    const effectiveEvent = b.Event || target.Event;
+    const evCheck = await enforceEventWrite(req.user, effectiveEvent);
+    if (!evCheck.ok) return res.status(403).json({ error: evCheck.error });
 
     // Enforce store access
     const allowedT2 = await resolveStoreAccess(req.user);
@@ -607,9 +636,10 @@ app.put('/api/transactions/:rowIndex', requireAuth, async (req, res) => {
       b.TRX_Number,
       target.Logged_By,
       req.user.username,
+      effectiveEvent,
     ];
 
-    await sheetsUpdateValues(`${TRX_SHEET}!A${rowIndex}:P${rowIndex}`, [row]);
+    await sheetsUpdateValues(`${TRX_SHEET}!A${rowIndex}:Q${rowIndex}`, [row]);
 
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
@@ -686,6 +716,7 @@ async function computeBookingUpdate() {
       Transacted_Amount_Gross: t.gross,
       Balance_Amount_Tobe_Transacted: balance,
       Pct_Transacted: pct,
+      Event: b.Event || '',
     };
   });
 }
@@ -693,7 +724,9 @@ async function computeBookingUpdate() {
 // API: get live read-only report data (no sheet write)
 app.get('/api/booking-update', requireAuth, async (req, res) => {
   try {
-    const data = await computeBookingUpdate();
+    let data = await computeBookingUpdate();
+    const ev = String(req.query.event || '').trim().toLowerCase();
+    if (ev) data = data.filter(r => String(r.Event || '').toLowerCase() === ev);
     const allowed = await resolveStoreAccess(req.user);
     if (allowed === null) return res.json(data);
     const set = new Set(allowed.map(s => s.toLowerCase()));
@@ -708,7 +741,7 @@ const JUSTIFICATION_SHEET = 'Justification';
 
 async function readJustifications() {
   try {
-    const res = await sheetsGetValues(`${JUSTIFICATION_SHEET}!A:D`);
+    const res = await sheetsGetValues(`${JUSTIFICATION_SHEET}!A:E`);
     const rows = res.values || [];
     if (rows.length <= 1) return [];
     return rows.slice(1)
@@ -718,6 +751,7 @@ async function readJustifications() {
         Justification: r[1] || '',
         Updated_By: r[2] || '',
         Updated_Date: r[3] || '',
+        Event: String(r[4] || '').trim(),
       }))
       .filter(r => r.Customer_Name);
   } catch (e) {
@@ -727,27 +761,130 @@ async function readJustifications() {
 }
 
 app.get('/api/justifications', requireAuth, async (req, res) => {
-  try { res.json(await readJustifications()); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    let all = await readJustifications();
+    const ev = String(req.query.event || '').trim().toLowerCase();
+    if (ev) all = all.filter(j => String(j.Event || '').toLowerCase() === ev);
+    res.json(all);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/justifications', requireAuth, async (req, res) => {
   try {
-    const { Customer_Name, Justification } = req.body;
+    const { Customer_Name, Justification, Event } = req.body;
     if (!Customer_Name || !Justification) return res.status(400).json({ error: 'Customer name and justification required' });
+    if (!Event) return res.status(400).json({ error: 'Event is required' });
+
+    const evCheck = await enforceEventWrite(req.user, Event);
+    if (!evCheck.ok) return res.status(403).json({ error: evCheck.error });
 
     const existing = await readJustifications();
-    const match = existing.find(j => j.Customer_Name.toLowerCase() === Customer_Name.toLowerCase());
+    const match = existing.find(j => j.Customer_Name.toLowerCase() === Customer_Name.toLowerCase() && String(j.Event).toLowerCase() === String(Event).toLowerCase());
 
     if (match) {
-      await sheetsUpdateValues(`${JUSTIFICATION_SHEET}!A${match.rowIndex}:D${match.rowIndex}`, [[
-        Customer_Name, Justification, req.user.username, todayMDY()
+      await sheetsUpdateValues(`${JUSTIFICATION_SHEET}!A${match.rowIndex}:E${match.rowIndex}`, [[
+        Customer_Name, Justification, req.user.username, todayMDY(), Event
       ]]);
     } else {
-      await sheetsAppendValues(`${JUSTIFICATION_SHEET}!A:D`, [[
-        Customer_Name, Justification, req.user.username, todayMDY()
+      await sheetsAppendValues(`${JUSTIFICATION_SHEET}!A:E`, [[
+        Customer_Name, Justification, req.user.username, todayMDY(), Event
       ]]);
     }
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== EVENTS REGISTRY =====
+const EVENTS_SHEET = 'Events';
+let eventsCache = { data: null, ts: 0 };
+const EVENTS_CACHE_MS = 30 * 1000;
+
+async function readEvents() {
+  if (eventsCache.data && Date.now() - eventsCache.ts < EVENTS_CACHE_MS) return eventsCache.data;
+  try {
+    const res = await sheetsGetValues(`${EVENTS_SHEET}!A:E`);
+    const rows = res.values || [];
+    if (rows.length <= 1) { eventsCache.data = []; eventsCache.ts = Date.now(); return []; }
+    const events = rows.slice(1)
+      .map((r, i) => ({
+        rowIndex: i + 2,
+        EventID: String(r[0] || '').trim(),
+        EventName: String(r[1] || '').trim(),
+        Type: String(r[2] || '').trim(),
+        Status: String(r[3] || 'Active').trim(),
+        Date_Created: r[4] || '',
+      }))
+      .filter(e => e.EventID && e.EventName);
+    eventsCache.data = events;
+    eventsCache.ts = Date.now();
+    return events;
+  } catch (e) {
+    console.error('[Events] Sheet read error:', e.message);
+    eventsCache.data = [];
+    eventsCache.ts = Date.now();
+    return [];
+  }
+}
+
+function invalidateEventsCache() { eventsCache.ts = 0; }
+
+// Returns true if the given event name is Archived (and therefore read-only for non-admins)
+async function isEventArchived(eventName) {
+  if (!eventName) return false;
+  const events = await readEvents();
+  const ev = events.find(e => e.EventName.toLowerCase() === String(eventName).toLowerCase());
+  return ev ? ev.Status.toLowerCase() === 'archived' : false;
+}
+
+// Enforce event name is provided + archive check (for non-admins)
+async function enforceEventWrite(user, eventName) {
+  if (!eventName) return { ok: false, error: 'Event is required' };
+  if (user.role === 'admin') return { ok: true };
+  if (await isEventArchived(eventName)) return { ok: false, error: `Event "${eventName}" is archived — read only` };
+  return { ok: true };
+}
+
+app.get('/api/events', requireAuth, async (req, res) => {
+  try { res.json(await readEvents()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/events', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Only admins can create events' });
+    const EventID = String(req.body.EventID || '').trim();
+    const EventName = String(req.body.EventName || '').trim();
+    const Type = String(req.body.Type || '').trim();
+    const Status = String(req.body.Status || 'Active').trim();
+    if (!EventID || !EventName) return res.status(400).json({ error: 'EventID and EventName required' });
+    if (Status !== 'Active' && Status !== 'Archived') return res.status(400).json({ error: 'Status must be Active or Archived' });
+
+    const existing = await readEvents();
+    if (existing.some(e => e.EventID.toLowerCase() === EventID.toLowerCase())) return res.status(409).json({ error: `EventID "${EventID}" already exists` });
+    if (existing.some(e => e.EventName.toLowerCase() === EventName.toLowerCase())) return res.status(409).json({ error: `EventName "${EventName}" already exists` });
+
+    await sheetsAppendValues(`${EVENTS_SHEET}!A:E`, [[EventID, EventName, Type, Status, todayMDY()]]);
+    invalidateEventsCache();
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/events/:eventId', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Only admins can update events' });
+    const target = String(req.params.eventId).trim().toLowerCase();
+    const existing = await readEvents();
+    const match = existing.find(e => e.EventID.toLowerCase() === target);
+    if (!match) return res.status(404).json({ error: 'Event not found' });
+
+    const EventName = req.body.EventName !== undefined ? String(req.body.EventName).trim() : match.EventName;
+    const Type = req.body.Type !== undefined ? String(req.body.Type).trim() : match.Type;
+    const Status = req.body.Status !== undefined ? String(req.body.Status).trim() : match.Status;
+    if (!EventName) return res.status(400).json({ error: 'EventName required' });
+    if (Status !== 'Active' && Status !== 'Archived') return res.status(400).json({ error: 'Status must be Active or Archived' });
+
+    await sheetsUpdateValues(`${EVENTS_SHEET}!A${match.rowIndex}:E${match.rowIndex}`, [[match.EventID, EventName, Type, Status, match.Date_Created]]);
+    invalidateEventsCache();
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
@@ -913,9 +1050,13 @@ app.post('/api/proceed', requireAuth, async (req, res) => {
 app.delete('/api/justifications/:customerName', requireAuth, async (req, res) => {
   try {
     const target = decodeURIComponent(req.params.customerName).toLowerCase();
+    const ev = String(req.query.event || '').trim().toLowerCase();
     const existing = await readJustifications();
-    const match = existing.find(j => j.Customer_Name.toLowerCase() === target);
+    const match = existing.find(j => j.Customer_Name.toLowerCase() === target && (!ev || String(j.Event).toLowerCase() === ev));
     if (!match) return res.status(404).json({ error: 'Justification not found' });
+
+    const evCheck = await enforceEventWrite(req.user, match.Event);
+    if (!evCheck.ok) return res.status(403).json({ error: evCheck.error });
 
     const meta = await sheetsGetMeta();
     const js = meta.sheets.find(s => s.properties.title === JUSTIFICATION_SHEET);
@@ -1025,7 +1166,12 @@ const HTML = `<!DOCTYPE html>
 
 <div class="navbar-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
   <h5 class="m-0"><i class="fas fa-calendar-check me-2 text-primary"></i>CaMaNaVa Booking Management</h5>
-  <div class="d-flex align-items-center gap-2">
+  <div class="d-flex align-items-center gap-2 flex-wrap">
+    <div class="d-flex align-items-center gap-1" style="background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:3px 10px">
+      <i class="fas fa-calendar-alt text-primary"></i>
+      <select class="form-select form-select-sm border-0 bg-transparent" id="eventPicker" onchange="onEventChange(this.value)" style="min-width:220px;outline:none;box-shadow:none"></select>
+      <span class="badge bg-warning text-dark" id="eventArchivedBadge" style="display:none">ARCHIVED</span>
+    </div>
     <span class="user-chip"><i class="fas fa-user"></i><span id="userName"></span><span class="role-tag" id="userRole"></span></span>
     <button class="theme-toggle" onclick="toggleTheme()"><i class="fas fa-moon" id="themeIcon"></i></button>
     <button class="theme-toggle" onclick="doLogout()" title="Logout"><i class="fas fa-sign-out-alt"></i></button>
@@ -1038,6 +1184,7 @@ const HTML = `<!DOCTYPE html>
     <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#addTab">➕ Add Booking</a></li>
     <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#trxTab">📦 Booking Transaction</a></li>
     <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#updateTab" onclick="loadBookingUpdate()">📈 Booking Update</a></li>
+    <li class="nav-item" id="bookingRecordsNav" style="display:none"><a class="nav-link" data-bs-toggle="tab" href="#recordsTab" onclick="loadEventsList()">📅 Booking Records</a></li>
   </ul>
 
   <div class="tab-content">
@@ -1084,6 +1231,7 @@ const HTML = `<!DOCTYPE html>
         <h5 id="formTitle" class="mb-3">Add Booking</h5>
         <input type="hidden" id="editRowIndex">
         <div class="row g-3">
+          <div class="col-md-4 col-sm-6"><label class="form-label">Event <span class="required-mark">*</span></label><select class="form-select" id="bookingEvent"></select></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Date Booked</label><input type="text" class="form-control" id="Date_Booked" readonly></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Customer Name <span class="required-mark">*</span></label><input list="customerList" class="form-control" id="Customer_Name" autocomplete="off" placeholder="Type to search..."><datalist id="customerList"></datalist></div>
           <div class="col-md-4 col-sm-6"><label class="form-label">Customer No</label><input type="text" class="form-control" id="Customer_No" readonly></div>
@@ -1317,6 +1465,29 @@ const HTML = `<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- BOOKING RECORDS TAB (admin only) -->
+    <div class="tab-pane fade" id="recordsTab">
+      <div class="card p-3">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+          <h5 class="m-0">Booking Events</h5>
+          <button class="btn btn-primary" onclick="openEventCreateModal()"><i class="fas fa-plus me-1"></i>New Event</button>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover">
+            <thead><tr>
+              <th>EventID</th>
+              <th>Event Name</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Date Created</th>
+              <th>Actions</th>
+            </tr></thead>
+            <tbody id="eventsTableBody"><tr><td colspan="6" class="text-center text-muted py-4">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 </div>
@@ -1352,6 +1523,33 @@ const HTML = `<!DOCTYPE html>
     </div>
   </div>
 </div>
+<div class="scanner-modal" id="eventPickModal">
+  <div class="scanner-box">
+    <h6 class="mb-2"><i class="fas fa-calendar-alt me-2 text-primary"></i>Select a Booking Event</h6>
+    <div class="text-muted small mb-3">Choose which event you want to work on. You can switch anytime from the top-right dropdown.</div>
+    <select class="form-select mb-3" id="eventPickSelect" size="6" style="height:auto"></select>
+    <div class="d-flex gap-2">
+      <button class="btn btn-primary flex-fill" onclick="confirmEventPick()"><i class="fas fa-check me-1"></i>Open</button>
+    </div>
+  </div>
+</div>
+<div class="scanner-modal" id="eventCreateModal">
+  <div class="scanner-box">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <h6 class="m-0"><i class="fas fa-plus-circle me-2 text-primary"></i>New Event</h6>
+      <button class="btn-close" onclick="closeEventCreateModal()"></button>
+    </div>
+    <input type="hidden" id="evEditID">
+    <div class="mb-2"><label class="form-label">Event ID <span class="required-mark">*</span> <span class="text-muted small">(e.g., OCT2026, MAR2027)</span></label><input type="text" class="form-control" id="evCreateID" placeholder="OCT2026"></div>
+    <div class="mb-2"><label class="form-label">Event Name <span class="required-mark">*</span></label><input type="text" class="form-control" id="evCreateName" placeholder="October Virtual Booking 2026"></div>
+    <div class="mb-2"><label class="form-label">Type</label><select class="form-select" id="evCreateType"><option value="WTC">WTC</option><option value="Virtual" selected>Virtual</option></select></div>
+    <div class="mb-3"><label class="form-label">Status</label><select class="form-select" id="evCreateStatus"><option value="Active" selected>Active</option><option value="Archived">Archived</option></select></div>
+    <div class="d-flex gap-2">
+      <button class="btn btn-primary flex-fill" onclick="saveEvent()"><i class="fas fa-save me-1"></i>Save</button>
+      <button class="btn btn-secondary flex-fill" onclick="closeEventCreateModal()">Cancel</button>
+    </div>
+  </div>
+</div>
 <div class="owner-badge">By Carl_M@17</div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
@@ -1365,6 +1563,161 @@ let sortAsc = false;
 let currentGroup = 'Supplier';
 let charts = {};
 let currentUser = null;  // { username, fullName, role }
+let allEvents = [];       // list from /api/events
+let currentEvent = '';    // currently selected EventName
+function evQS(){ return currentEvent ? '?event=' + encodeURIComponent(currentEvent) : ''; }
+function isCurrentEventArchived(){
+  const ev = allEvents.find(e => e.EventName.toLowerCase() === String(currentEvent).toLowerCase());
+  return !!(ev && String(ev.Status).toLowerCase() === 'archived');
+}
+function canEditCurrentEvent(){
+  if (!currentEvent) return false;
+  if (currentUser && currentUser.role === 'admin') return true;
+  return !isCurrentEventArchived();
+}
+
+async function loadEvents(){
+  try {
+    allEvents = await api('GET', '/api/events');
+  } catch(e){ console.error('Failed to load events:', e); allEvents = []; }
+}
+
+function populateEventSelects(){
+  // Navbar picker
+  const nav = document.getElementById('eventPicker');
+  if (nav){
+    const visible = allEvents.filter(e => currentUser && currentUser.role === 'admin' ? true : true); // show all; archived still visible
+    nav.innerHTML = visible.map(e => '<option value="'+e.EventName.replace(/"/g,'&quot;')+'" '+(e.EventName === currentEvent ? 'selected' : '')+'>'+e.EventName+(e.Status === 'Archived' ? ' (Archived)' : '')+'</option>').join('');
+  }
+  // Add Booking form
+  const be = document.getElementById('bookingEvent');
+  if (be){
+    const options = allEvents.filter(e => {
+      if (currentUser && currentUser.role === 'admin') return true;
+      return e.Status !== 'Archived';
+    });
+    be.innerHTML = '<option value="">— Select Event —</option>' + options.map(e => '<option value="'+e.EventName.replace(/"/g,'&quot;')+'" '+(e.EventName === currentEvent ? 'selected' : '')+'>'+e.EventName+'</option>').join('');
+  }
+  // Archived badge
+  const badge = document.getElementById('eventArchivedBadge');
+  if (badge) badge.style.display = isCurrentEventArchived() ? '' : 'none';
+}
+
+function openEventPickModal(){
+  const sel = document.getElementById('eventPickSelect');
+  const prev = localStorage.getItem('selectedEvent') || '';
+  const activeFirst = [...allEvents].sort((a,b) => (a.Status === 'Active' ? -1 : 1) - (b.Status === 'Active' ? -1 : 1));
+  sel.innerHTML = activeFirst.map(e => '<option value="'+e.EventName.replace(/"/g,'&quot;')+'" '+(e.EventName === prev ? 'selected' : '')+'>'+e.EventName+' — '+e.Status+'</option>').join('');
+  if (!sel.value && sel.options.length) sel.options[0].selected = true;
+  document.getElementById('eventPickModal').classList.add('show');
+}
+
+function confirmEventPick(){
+  const sel = document.getElementById('eventPickSelect');
+  if (!sel.value){ toast('Please select an event', 'error'); return; }
+  currentEvent = sel.value;
+  localStorage.setItem('selectedEvent', currentEvent);
+  document.getElementById('eventPickModal').classList.remove('show');
+  populateEventSelects();
+  // Reload everything with the chosen event
+  loadBookings();
+  loadTransactions();
+}
+
+function onEventChange(newEventName){
+  if (!newEventName || newEventName === currentEvent) return;
+  currentEvent = newEventName;
+  localStorage.setItem('selectedEvent', currentEvent);
+  populateEventSelects();
+  // Reload data for the new event
+  loadBookings();
+  loadTransactions();
+  // If on Booking Update tab, refresh it too
+  const upd = document.querySelector('.nav-link[href="#updateTab"]');
+  if (upd && upd.classList.contains('active')) loadBookingUpdate();
+}
+
+function openEventCreateModal(ev){
+  document.getElementById('evEditID').value = ev ? ev.EventID : '';
+  document.getElementById('evCreateID').value = ev ? ev.EventID : '';
+  document.getElementById('evCreateID').disabled = !!ev;  // ID is immutable
+  document.getElementById('evCreateName').value = ev ? ev.EventName : '';
+  document.getElementById('evCreateType').value = ev ? (ev.Type || 'Virtual') : 'Virtual';
+  document.getElementById('evCreateStatus').value = ev ? ev.Status : 'Active';
+  document.getElementById('eventCreateModal').classList.add('show');
+}
+function closeEventCreateModal(){
+  document.getElementById('eventCreateModal').classList.remove('show');
+}
+
+async function saveEvent(){
+  const editID = document.getElementById('evEditID').value.trim();
+  const EventID = document.getElementById('evCreateID').value.trim();
+  const EventName = document.getElementById('evCreateName').value.trim();
+  const Type = document.getElementById('evCreateType').value;
+  const Status = document.getElementById('evCreateStatus').value;
+  if (!EventID || !EventName){ toast('Event ID and Name required', 'error'); return; }
+  showSpinner(true);
+  try {
+    if (editID) {
+      await api('PUT', '/api/events/' + encodeURIComponent(editID), { EventName, Type, Status });
+    } else {
+      await api('POST', '/api/events', { EventID, EventName, Type, Status });
+    }
+    toast('Event saved');
+    closeEventCreateModal();
+    await loadEvents();
+    populateEventSelects();
+    loadEventsList();
+  } catch(e){ toast(e.message, 'error'); }
+  finally { showSpinner(false); }
+}
+
+async function loadEventsList(){
+  const tbody = document.getElementById('eventsTableBody');
+  if (!tbody) return;
+  await loadEvents();
+  if (!allEvents.length){
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No events yet — click "New Event" to add one</td></tr>';
+    return;
+  }
+  tbody.innerHTML = allEvents.map(e => {
+    const statusColor = e.Status === 'Active' ? 'success' : 'secondary';
+    const safeID = e.EventID.replace(/"/g,'&quot;');
+    return '<tr>'
+      + '<td><strong>'+e.EventID+'</strong></td>'
+      + '<td>'+e.EventName+'</td>'
+      + '<td>'+(e.Type || '')+'</td>'
+      + '<td><span class="badge bg-'+statusColor+'">'+e.Status+'</span></td>'
+      + '<td>'+(e.Date_Created || '')+'</td>'
+      + '<td>'
+        + '<button class="btn btn-sm btn-outline-primary action-btn" onclick="editEvent(\\''+safeID+'\\')"><i class="fas fa-edit"></i> Edit</button>'
+        + ' <button class="btn btn-sm btn-outline-'+(e.Status === 'Active' ? 'warning' : 'success')+' action-btn" onclick="toggleEventStatus(\\''+safeID+'\\')"><i class="fas fa-'+(e.Status === 'Active' ? 'archive' : 'play')+'"></i> '+(e.Status === 'Active' ? 'Archive' : 'Activate')+'</button>'
+      + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+function editEvent(eventId){
+  const ev = allEvents.find(e => e.EventID === eventId);
+  if (ev) openEventCreateModal(ev);
+}
+
+async function toggleEventStatus(eventId){
+  const ev = allEvents.find(e => e.EventID === eventId);
+  if (!ev) return;
+  const newStatus = ev.Status === 'Active' ? 'Archived' : 'Active';
+  if (!confirm('Change "' + ev.EventName + '" status to ' + newStatus + '?')) return;
+  showSpinner(true);
+  try {
+    await api('PUT', '/api/events/' + encodeURIComponent(eventId), { Status: newStatus });
+    toast('Status updated');
+    await loadEvents();
+    populateEventSelects();
+    loadEventsList();
+  } catch(e){ toast(e.message, 'error'); }
+  finally { showSpinner(false); }
+}
 
 function getToken(){ return localStorage.getItem('authToken'); }
 function setToken(t){ localStorage.setItem('authToken', t); }
@@ -1446,6 +1799,9 @@ function showApp(){
       document.getElementById('userScope').textContent = '· ' + scope;
     }
   }
+  // Show Booking Records nav for admin
+  const rec = document.getElementById('bookingRecordsNav');
+  if (rec) rec.style.display = currentUser.role === 'admin' ? '' : 'none';
 }
 
 async function doLogin(){
@@ -1543,6 +1899,9 @@ function clearForm(){
   document.getElementById('editRowIndex').value = '';
   document.getElementById('formTitle').textContent = 'Add Booking';
   document.getElementById('btnSave').innerHTML = '<i class="fas fa-save me-1"></i>Save';
+  // Default Event to current selection
+  const be = document.getElementById('bookingEvent');
+  if (be && currentEvent) be.value = currentEvent;
 }
 
 async function saveBooking(){
@@ -1560,9 +1919,10 @@ async function saveBooking(){
     Deals: document.getElementById('Deals').value,
     Total_Booked_Amount: document.getElementById('Total_Booked_Amount').value,
     Remarks: document.getElementById('Remarks').value,
+    Event: document.getElementById('bookingEvent').value,
   };
 
-  const required = ['Customer_Name','Customer_No','Region','Area','Store_Delivery','Dept','Supplier','Deals','Total_Booked_Amount'];
+  const required = ['Event','Customer_Name','Customer_No','Region','Area','Store_Delivery','Dept','Supplier','Deals','Total_Booked_Amount'];
   for (const f of required){
     if (!payload[f]){ toast('Please fill: ' + f.replace(/_/g,' '), 'error'); return; }
   }
@@ -1607,6 +1967,8 @@ function editBooking(rowIndex){
   document.getElementById('Deals').value = b.Deals;
   document.getElementById('Total_Booked_Amount').value = b.Total_Booked_Amount;
   document.getElementById('Remarks').value = b.Remarks;
+  const be = document.getElementById('bookingEvent');
+  if (be) be.value = b.Event || currentEvent;
   document.getElementById('formTitle').textContent = 'Edit Booking #' + b.Booking_No;
   document.getElementById('btnSave').innerHTML = '<i class="fas fa-save me-1"></i>Update';
   document.querySelector('a[href="#addTab"]').click();
@@ -1625,9 +1987,10 @@ async function deleteBooking(rowIndex, bookingNo){
 }
 
 async function loadBookings(){
+  if (!currentEvent) return;
   showSpinner(true);
   try {
-    allBookings = await api('GET', '/api/bookings');
+    allBookings = await api('GET', '/api/bookings' + evQS());
     renderTable();
     renderSummary();
     populateAreaFilter();
@@ -1935,7 +2298,7 @@ async function lookupBooking(){
   if (!bn){ toast('Enter or scan a Booking#', 'error'); return; }
   showSpinner(true);
   try {
-    const b = await api('GET', '/api/booking-lookup/' + encodeURIComponent(bn));
+    const b = await api('GET', '/api/booking-lookup/' + encodeURIComponent(bn) + evQS());
     document.getElementById('trx_Name').value = b.Customer_Name;
     document.getElementById('trx_Customer_No').value = b.Customer_No;
     document.getElementById('trx_Region').value = b.Region;
@@ -1993,6 +2356,7 @@ async function saveTransaction(){
     Transacted_Discount_Net: document.getElementById('trx_Discount').value || '0',
     Transacted_Amount_Net: document.getElementById('trx_Net').value,
     TRX_Number: document.getElementById('trx_TRX_Number').value,
+    Event: currentEvent,
   };
 
   if (!payload.Booking_No){ toast('Booking# is required', 'error'); return; }
@@ -2024,9 +2388,10 @@ async function saveTransaction(){
 }
 
 async function loadTransactions(){
+  if (!currentEvent) return;
   showSpinner(true);
   try {
-    allTransactions = await api('GET', '/api/transactions');
+    allTransactions = await api('GET', '/api/transactions' + evQS());
     renderTrxTable();
   } catch(e){ toast(e.message, 'error'); }
   finally { showSpinner(false); }
@@ -2123,7 +2488,7 @@ function editTransaction(rowIndex){
   document.getElementById('trx_Discount').value = t.Transacted_Discount_Net;
   // Look up the original booking to show its Total_Booked_Amount (background, won't block)
   document.getElementById('trx_Total_Booked').value = '...';
-  api('GET', '/api/booking-lookup/' + encodeURIComponent(t.Booking_No))
+  api('GET', '/api/booking-lookup/' + encodeURIComponent(t.Booking_No) + evQS())
     .then(b => { document.getElementById('trx_Total_Booked').value = fmtPeso(b.Total_Booked_Amount); })
     .catch(() => { document.getElementById('trx_Total_Booked').value = ''; });
   calcNet();
@@ -2245,7 +2610,7 @@ let overallPct = 0;
 
 async function loadJustifications(){
   try {
-    const data = await api('GET', '/api/justifications');
+    const data = await api('GET', '/api/justifications' + evQS());
     justifications = {};
     data.forEach(j => { justifications[j.Customer_Name.toLowerCase()] = j; });
   } catch(e){ console.error('Failed to load justifications:', e); }
@@ -2270,7 +2635,7 @@ async function saveJustification(){
   if (!text){ toast('Please enter a justification', 'error'); return; }
   showSpinner(true);
   try {
-    await api('POST', '/api/justifications', { Customer_Name: name, Justification: text });
+    await api('POST', '/api/justifications', { Customer_Name: name, Justification: text, Event: currentEvent });
     toast('Justification saved');
     closeJustifyModal();
     await loadJustifications();
@@ -2283,7 +2648,7 @@ async function deleteJustification(customerName){
   if (!confirm('Clear justification for ' + customerName + '?')) return;
   showSpinner(true);
   try {
-    await api('DELETE', '/api/justifications/' + encodeURIComponent(customerName));
+    await api('DELETE', '/api/justifications/' + encodeURIComponent(customerName) + evQS());
     toast('Justification cleared');
     await loadJustifications();
     renderPerformance();
@@ -2436,7 +2801,7 @@ async function toggleCancelEnabled(el){
 async function loadBookingUpdate(){
   showSpinner(true);
   try {
-    const [data] = await Promise.all([api('GET', '/api/booking-update'), loadJustifications(), loadProceed(), loadSettings()]);
+    const [data] = await Promise.all([api('GET', '/api/booking-update' + evQS()), loadJustifications(), loadProceed(), loadSettings()]);
     // Merge proceed data into each row
     const asNum = v => (v === '' || v == null ? '' : num(v));
     allUpdate = data.map(r => {
@@ -2822,7 +3187,7 @@ function exportUpdateExcel(){
   // Title row (dynamic date MM/DD/YYYY)
   const d = new Date();
   const titleDate = (d.getMonth()+1) + '/' + d.getDate() + '/' + d.getFullYear();
-  const title = 'CAMANAVA Booking Update as of ' + titleDate;
+  const title = 'CAMANAVA Booking Update — ' + (currentEvent || 'All Events') + ' — as of ' + titleDate;
   const titleRow = new Array(NCOLS).fill('');
   titleRow[0] = title;
 
@@ -2914,11 +3279,25 @@ async function initApp(){
   document.getElementById('Date_Booked').value = todayStr();
   document.getElementById('trx_Date_Transacted').value = todayISO();
   await loadLookups();
-  await loadBookings();
-  await loadTransactions();
+  await loadEvents();
+  populateEventSelects();
+  // Decide event: last saved, or show picker
+  const saved = localStorage.getItem('selectedEvent');
+  const match = saved && allEvents.find(e => e.EventName === saved);
+  if (match){
+    currentEvent = match.EventName;
+    populateEventSelects();
+    await loadBookings();
+    await loadTransactions();
+  } else if (allEvents.length){
+    // First-time or saved event removed — show picker
+    openEventPickModal();
+  } else {
+    toast('No events configured. An admin must create an event first.', 'error');
+  }
   // Auto-refresh every 30s for multi-user sync
   if (window._refreshInterval) clearInterval(window._refreshInterval);
-  window._refreshInterval = setInterval(() => { loadBookings(); loadTransactions(); }, 30000);
+  window._refreshInterval = setInterval(() => { if (currentEvent) { loadBookings(); loadTransactions(); } }, 30000);
 }
 
 // INIT — try auto-login if token exists
