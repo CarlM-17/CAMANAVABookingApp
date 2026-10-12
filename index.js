@@ -799,6 +799,16 @@ const EVENTS_SHEET = 'Events';
 let eventsCache = { data: null, ts: 0 };
 const EVENTS_CACHE_MS = 30 * 1000;
 
+async function ensureEventsSheet() {
+  // Auto-create the Events sheet with headers if it doesn't exist
+  const meta = await sheetsGetMeta();
+  const exists = meta.sheets.some(s => s.properties.title === EVENTS_SHEET);
+  if (exists) return;
+  await sheetsBatchUpdate([{ addSheet: { properties: { title: EVENTS_SHEET } } }]);
+  await sheetsUpdateValues(`${EVENTS_SHEET}!A1:E1`, [['EventID', 'EventName', 'Type', 'Status', 'Date_Created']]);
+  console.log('[Events] Auto-created Events sheet with headers');
+}
+
 async function readEvents() {
   if (eventsCache.data && Date.now() - eventsCache.ts < EVENTS_CACHE_MS) return eventsCache.data;
   try {
@@ -819,7 +829,8 @@ async function readEvents() {
     eventsCache.ts = Date.now();
     return events;
   } catch (e) {
-    console.error('[Events] Sheet read error:', e.message);
+    // Sheet may not exist — try to auto-create it
+    try { await ensureEventsSheet(); } catch (ee) { console.error('[Events] Auto-create failed:', ee.message); }
     eventsCache.data = [];
     eventsCache.ts = Date.now();
     return [];
