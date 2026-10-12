@@ -1,3 +1,4 @@
+
 // Booking Management Web App
 // Single-file Express server + embedded frontend
 // Backend: Google Sheets via service account
@@ -77,7 +78,7 @@ app.get('/sw.js', (req, res) => {
   res.set('Content-Type', 'application/javascript');
   res.set('Service-Worker-Allowed', '/');
   res.send(`
-    const CACHE = 'camanava-v4-green';
+    const CACHE = 'camanava-v5-navbar';
     const SHELL = ['/Booking_icon.png', '/Dashboard_icon.png', '/manifest.json'];
     self.addEventListener('install', e => {
       self.skipWaiting();
@@ -1228,8 +1229,19 @@ const HTML = `<!DOCTYPE html>
   .form-control:focus,.form-select:focus{background:var(--input);color:var(--text);border-color:var(--primary);box-shadow:0 0 0 3px rgba(30,64,175,.12)}
   .form-control:disabled,.form-control[readonly]{background:var(--surface-alt);opacity:.9}
   .form-control-sm,.form-select-sm{font-size:12.5px;padding:4px 10px}
-  .navbar-custom{background:var(--card);border-bottom:1px solid var(--border);padding:10px 20px;box-shadow:var(--shadow-sm);position:sticky;top:0;z-index:100}
-  .brand-logo{height:30px;width:auto;max-width:160px;object-fit:contain}
+  .navbar-custom{background:linear-gradient(90deg,#0b1f0e 0%,#14532d 100%);border-bottom:1px solid #0b1f0e;padding:10px 20px;box-shadow:0 2px 8px rgba(0,0,0,.15);position:sticky;top:0;z-index:100;color:#f1f5f9}
+  .navbar-custom .user-chip{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14);color:#f1f5f9}
+  .navbar-custom .user-chip .role-tag{background:#eab308;color:#0b1f0e;font-weight:800}
+  .navbar-custom .user-chip .role-tag.admin{background:#f87171;color:#0b1f0e}
+  .navbar-custom .theme-toggle{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14);color:#f1f5f9}
+  .navbar-custom .theme-toggle:hover{background:rgba(255,255,255,.18);color:#fff}
+  .navbar-custom .form-select{background:transparent;color:#f1f5f9;border:none}
+  .navbar-custom .form-select option{color:#0b1f0e}
+  .brand-logo{height:40px;width:auto;max-width:220px;object-fit:contain;display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.3))}
+  /* Event picker chip in dark navbar */
+  .nav-event-chip{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:3px 10px;color:#f1f5f9}
+  .nav-event-chip i{color:#eab308}
+  .nav-event-chip .badge{background:#eab308;color:#0b1f0e}
   .nav-tabs{border-color:var(--border);gap:4px}
   .nav-tabs .nav-link{color:var(--muted);border:none;border-radius:0;padding:10px 16px;font-weight:500;font-size:13.5px;position:relative;transition:color .15s}
   .nav-tabs .nav-link:hover{color:var(--text);border:none}
@@ -1320,7 +1332,9 @@ const HTML = `<!DOCTYPE html>
 <div class="login-screen" id="loginScreen">
   <div class="login-box">
     <div class="text-center mb-3">
-      <img src="/Booking_icon.png" alt="" style="width:64px;height:64px;border-radius:16px;box-shadow:0 8px 20px rgba(15,23,42,.15)">
+      <div style="display:inline-flex;align-items:center;justify-content:center;width:84px;height:84px;background:linear-gradient(135deg,#0b1f0e,#14532d);border-radius:22px;box-shadow:0 10px 25px rgba(20,83,45,.35),inset 0 1px 0 rgba(255,255,255,.08);padding:10px">
+        <img src="/Booking_icon.png" alt="" style="width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 2px 4px rgba(0,0,0,.3))">
+      </div>
     </div>
     <h4 class="text-center">CaMaNaVa Booking</h4>
     <div class="sub text-center">Sign in to continue</div>
@@ -1339,10 +1353,10 @@ const HTML = `<!DOCTYPE html>
   </div>
   <div class="d-flex align-items-center gap-2 flex-wrap">
     <button class="install-btn" id="installBtn" onclick="installPWA()" title="Install app"><i class="fas fa-download"></i> Install</button>
-    <div class="d-flex align-items-center gap-1" style="background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:3px 10px">
-      <i class="fas fa-calendar-alt text-primary"></i>
-      <select class="form-select form-select-sm border-0 bg-transparent" id="eventPicker" onchange="onEventChange(this.value)" style="min-width:220px;outline:none;box-shadow:none"></select>
-      <span class="badge bg-warning text-dark" id="eventArchivedBadge" style="display:none">ARCHIVED</span>
+    <div class="d-flex align-items-center gap-1 nav-event-chip">
+      <i class="fas fa-calendar-alt"></i>
+      <select class="form-select form-select-sm border-0 bg-transparent text-white" id="eventPicker" onchange="onEventChange(this.value)" style="min-width:220px;outline:none;box-shadow:none;color:#fff"></select>
+      <span class="badge" id="eventArchivedBadge" style="display:none">ARCHIVED</span>
     </div>
     <span class="user-chip"><i class="fas fa-user"></i><span id="userName"></span><span class="role-tag" id="userRole"></span></span>
     <button class="theme-toggle" onclick="toggleTheme()"><i class="fas fa-moon" id="themeIcon"></i></button>
