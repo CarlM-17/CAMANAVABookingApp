@@ -6,9 +6,73 @@
 const express = require('express');
 const https = require('https');
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
 const app = express();
 
 app.use(express.json());
+
+// ===== PWA ASSETS =====
+app.get('/icons/booking.png', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.sendFile(path.join(__dirname, 'Booking_icon.png'));
+});
+app.get('/icons/dashboard.png', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.sendFile(path.join(__dirname, 'Dashboard_icon.png'));
+});
+app.get('/favicon.ico', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.sendFile(path.join(__dirname, 'Booking_icon.png'));
+});
+
+app.get('/manifest.json', (req, res) => {
+  res.json({
+    name: 'CaMaNaVa Booking Management',
+    short_name: 'CaMaNaVa Booking',
+    description: 'Booking, transactions, and performance tracking',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    orientation: 'portrait-primary',
+    background_color: '#f5f7fa',
+    theme_color: '#1e293b',
+    icons: [
+      { src: '/icons/booking.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/icons/booking.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/icons/booking.png', sizes: '1254x1254', type: 'image/png', purpose: 'maskable' },
+    ],
+    categories: ['business', 'productivity'],
+  });
+});
+
+app.get('/sw.js', (req, res) => {
+  res.set('Content-Type', 'application/javascript');
+  res.set('Service-Worker-Allowed', '/');
+  res.send(`
+    const CACHE = 'camanava-v2';
+    const SHELL = ['/icons/booking.png', '/icons/dashboard.png', '/manifest.json'];
+    self.addEventListener('install', e => {
+      self.skipWaiting();
+      e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).catch(()=>{}));
+    });
+    self.addEventListener('activate', e => {
+      e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))));
+      self.clients.claim();
+    });
+    self.addEventListener('fetch', e => {
+      const url = new URL(e.request.url);
+      // Never cache API or auth — always fresh
+      if (url.pathname.startsWith('/api/') || e.request.method !== 'GET') return;
+      // Cache-first for icons/manifest; network-first for the app shell
+      if (SHELL.includes(url.pathname)) {
+        e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+        return;
+      }
+      e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
+    });
+  `);
+});
 
 // ===== CONFIG =====
 const SHEET_ID = process.env.SHEET_ID;
@@ -1094,67 +1158,128 @@ const HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CaMaNaVa Booking Management</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#1e293b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CaMaNaVa Booking">
+<link rel="apple-touch-icon" href="/icons/booking.png">
+<link rel="icon" type="image/png" href="/icons/booking.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.0/umd/index.min.js"></script>
 <style>
-  :root{--bg:#f5f7fa;--card:#fff;--text:#1f2937;--muted:#6b7280;--border:#e5e7eb;--primary:#2563eb;--success:#10b981;--danger:#ef4444;--input:#fff}
-  [data-theme="dark"]{--bg:#0f172a;--card:#1e293b;--text:#e2e8f0;--muted:#94a3b8;--border:#334155;--primary:#3b82f6;--input:#0f172a}
-  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;transition:background .2s}
-  .card{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-  .form-control,.form-select{background:var(--input);color:var(--text);border-color:var(--border)}
-  .form-control:focus,.form-select:focus{background:var(--input);color:var(--text);box-shadow:0 0 0 .2rem rgba(37,99,235,.15)}
-  .form-control:disabled,.form-control[readonly]{background:var(--bg);opacity:.85}
-  .navbar-custom{background:var(--card);border-bottom:1px solid var(--border);padding:12px 20px}
-  .nav-tabs{border-color:var(--border)}
-  .nav-tabs .nav-link{color:var(--muted);border:none;padding:10px 18px}
-  .nav-tabs .nav-link.active{color:var(--primary);background:transparent;border-bottom:2px solid var(--primary)}
-  .nav-pills .nav-link{color:var(--muted)}
+  :root{
+    --bg:#f1f5f9;--card:#ffffff;--surface-alt:#f8fafc;--text:#0f172a;--text-2:#334155;--muted:#64748b;
+    --border:#e2e8f0;--border-strong:#cbd5e1;
+    --primary:#1e40af;--primary-hover:#1e3a8a;--primary-soft:#eff6ff;
+    --accent:#0ea5e9;--success:#059669;--warning:#d97706;--danger:#dc2626;--info:#0284c7;
+    --input:#ffffff;--shadow-sm:0 1px 2px rgba(15,23,42,.05);--shadow-md:0 1px 3px rgba(15,23,42,.08),0 1px 2px rgba(15,23,42,.04);
+    --radius:10px;--radius-sm:6px;--radius-lg:14px;
+  }
+  [data-theme="dark"]{
+    --bg:#0b1220;--card:#111827;--surface-alt:#0f172a;--text:#f1f5f9;--text-2:#cbd5e1;--muted:#94a3b8;
+    --border:#1e293b;--border-strong:#334155;
+    --primary:#60a5fa;--primary-hover:#3b82f6;--primary-soft:#1e3a8a;
+    --input:#0b1220;--shadow-sm:0 1px 2px rgba(0,0,0,.3);--shadow-md:0 1px 3px rgba(0,0,0,.4),0 1px 2px rgba(0,0,0,.3);
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;transition:background .2s}
+  h1,h2,h3,h4,h5,h6{color:var(--text);font-weight:600;letter-spacing:-.01em}
+  h5{font-size:16px}h6{font-size:14px;font-weight:600}
+  .card{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);transition:box-shadow .15s}
+  .card:hover{box-shadow:var(--shadow-md)}
+  .form-control,.form-select{background:var(--input);color:var(--text);border-color:var(--border);border-radius:var(--radius-sm);font-size:13px;transition:border-color .15s,box-shadow .15s}
+  .form-control:focus,.form-select:focus{background:var(--input);color:var(--text);border-color:var(--primary);box-shadow:0 0 0 3px rgba(30,64,175,.12)}
+  .form-control:disabled,.form-control[readonly]{background:var(--surface-alt);opacity:.9}
+  .form-control-sm,.form-select-sm{font-size:12.5px;padding:4px 10px}
+  .navbar-custom{background:var(--card);border-bottom:1px solid var(--border);padding:10px 20px;box-shadow:var(--shadow-sm);position:sticky;top:0;z-index:100}
+  .brand-logo{height:30px;width:auto;max-width:160px;object-fit:contain}
+  .nav-tabs{border-color:var(--border);gap:4px}
+  .nav-tabs .nav-link{color:var(--muted);border:none;border-radius:0;padding:10px 16px;font-weight:500;font-size:13.5px;position:relative;transition:color .15s}
+  .nav-tabs .nav-link:hover{color:var(--text);border:none}
+  .nav-tabs .nav-link.active{color:var(--primary);background:transparent;border:none;font-weight:600}
+  .nav-tabs .nav-link.active::after{content:'';position:absolute;left:12px;right:12px;bottom:-1px;height:2px;background:var(--primary);border-radius:2px}
+  .nav-pills{gap:4px}
+  .nav-pills .nav-link{color:var(--muted);border-radius:var(--radius-sm);padding:6px 12px;font-size:13px;font-weight:500}
+  .nav-pills .nav-link:hover{background:var(--surface-alt);color:var(--text)}
   .nav-pills .nav-link.active{background:var(--primary);color:#fff}
-  .stat-card{padding:20px;border-radius:12px}
-  .stat-card .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
-  .stat-card .value{font-size:26px;font-weight:700;margin-top:6px}
-  .stat-mini{padding:12px 14px;height:100%;display:flex;flex-direction:column;justify-content:center;min-height:82px}
-  .stat-mini .label{font-size:10px;letter-spacing:.4px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .stat-mini .value{font-size:17px;font-weight:700;margin-top:4px;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stat-card{padding:18px;border-radius:var(--radius)}
+  .stat-card .label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:600}
+  .stat-card .value{font-size:24px;font-weight:700;margin-top:6px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .stat-mini{padding:12px 14px;height:100%;display:flex;flex-direction:column;justify-content:center;min-height:80px}
+  .stat-mini .label{font-size:10px;letter-spacing:.5px;font-weight:600;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stat-mini .value{font-size:17px;font-weight:700;margin-top:4px;line-height:1.15;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
   .upd-stats .col-6,.upd-stats [class*="col-"]{display:flex}
   .upd-stats .card{width:100%}
-  @media(max-width:768px){.stat-mini .value{font-size:15px}}
-  .toast-container{position:fixed;top:20px;right:20px;z-index:9999}
-  .toast-msg{padding:12px 20px;border-radius:8px;margin-bottom:10px;color:#fff;min-width:280px;box-shadow:0 4px 12px rgba(0,0,0,.15);animation:slide .3s}
+  @media(max-width:768px){.stat-mini .value{font-size:15px}.stat-card .value{font-size:19px}}
+  .toast-container{position:fixed;top:16px;right:16px;z-index:9999}
+  .toast-msg{padding:12px 18px;border-radius:var(--radius);margin-bottom:10px;color:#fff;min-width:280px;max-width:380px;box-shadow:0 10px 25px rgba(15,23,42,.18);animation:slide .25s ease-out;font-size:13px;font-weight:500;display:flex;align-items:center;gap:10px}
   .toast-msg.success{background:var(--success)}.toast-msg.error{background:var(--danger)}
-  @keyframes slide{from{transform:translateX(100%)}to{transform:translateX(0)}}
-  .table-wrap{max-height:520px;overflow:auto}
-  .table thead{position:sticky;top:0;background:var(--card);z-index:10}
-  .table{color:var(--text)}
-  .table th{font-size:11px;text-transform:uppercase;color:var(--muted);cursor:pointer;user-select:none;white-space:nowrap}
+  .toast-msg::before{font-family:'Font Awesome 6 Free';font-weight:900;font-size:15px}
+  .toast-msg.success::before{content:'\\f00c'}.toast-msg.error::before{content:'\\f071'}
+  @keyframes slide{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+  .table-wrap{max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm)}
+  .table{color:var(--text);margin-bottom:0}
+  .table thead{position:sticky;top:0;background:var(--surface-alt);z-index:10}
+  .table thead th{background:var(--surface-alt)!important;border-bottom:2px solid var(--border-strong);box-shadow:inset 0 -1px 0 var(--border)}
+  .table th{font-size:10.5px;text-transform:uppercase;color:var(--muted);cursor:pointer;user-select:none;white-space:nowrap;font-weight:600;letter-spacing:.4px;padding:10px 10px}
   .table th:hover{color:var(--primary)}
-  .table td{vertical-align:middle;font-size:14px}
-  .spinner-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;z-index:9998}
+  .table td{vertical-align:middle;font-size:13px;padding:9px 10px;border-color:var(--border);color:var(--text-2)}
+  .table-hover tbody tr:hover{background:var(--surface-alt)}
+  .table tbody tr{transition:background .1s}
+  .text-end,.text-right{font-variant-numeric:tabular-nums}
+  .spinner-overlay{position:fixed;inset:0;background:rgba(15,23,42,.4);display:none;align-items:center;justify-content:center;z-index:9998;backdrop-filter:blur(2px)}
   .spinner-overlay.show{display:flex}
-  .btn-primary{background:var(--primary);border-color:var(--primary)}
-  .theme-toggle{cursor:pointer;padding:6px 12px;border-radius:6px;background:var(--bg);border:1px solid var(--border);color:var(--text)}
-  .pagination button{margin:0 2px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:13px}
+  .btn{border-radius:var(--radius-sm);font-size:13px;font-weight:500;padding:7px 14px;transition:all .15s;border:1px solid transparent}
+  .btn-sm{font-size:12px;padding:5px 10px}
+  .btn-primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn-primary:hover,.btn-primary:focus{background:var(--primary-hover);border-color:var(--primary-hover);color:#fff}
+  .btn-secondary{background:var(--surface-alt);border-color:var(--border);color:var(--text)}
+  .btn-secondary:hover{background:var(--border);color:var(--text);border-color:var(--border-strong)}
+  .btn-success{background:var(--success);border-color:var(--success);color:#fff}
+  .btn-success:hover{background:#047857;border-color:#047857;color:#fff}
+  .btn-outline-primary{color:var(--primary);border-color:var(--border-strong);background:var(--card)}
+  .btn-outline-primary:hover{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn-outline-secondary{color:var(--text-2);border-color:var(--border-strong);background:var(--card)}
+  .btn-outline-secondary:hover{background:var(--surface-alt);color:var(--text);border-color:var(--border-strong)}
+  .btn-outline-danger{color:var(--danger);border-color:var(--border-strong);background:var(--card)}
+  .btn-outline-danger:hover{background:var(--danger);border-color:var(--danger);color:#fff}
+  .theme-toggle{cursor:pointer;padding:6px 10px;border-radius:var(--radius-sm);background:var(--surface-alt);border:1px solid var(--border);color:var(--text-2);font-size:13px;transition:all .15s}
+  .theme-toggle:hover{background:var(--border);color:var(--text)}
+  .pagination button{margin:0 2px;padding:5px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--card);color:var(--text-2);font-size:12.5px;transition:all .15s}
+  .pagination button:hover:not(:disabled){background:var(--surface-alt);color:var(--text);border-color:var(--border-strong)}
   .pagination button.active{background:var(--primary);color:#fff;border-color:var(--primary)}
-  .pagination button:disabled{opacity:.5;cursor:not-allowed}
-  .action-btn{padding:2px 8px;font-size:12px;margin:0 2px}
-  .form-label{font-size:13px;font-weight:500;margin-bottom:4px}
-  .required-mark{color:var(--danger)}
-  @media(max-width:768px){.stat-card .value{font-size:20px}.table td,.table th{font-size:12px}}
-  .owner-badge{position:fixed;bottom:14px;right:14px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;padding:6px 14px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:.5px;box-shadow:0 4px 12px rgba(37,99,235,.35);z-index:9997;user-select:none}
-  .login-screen{position:fixed;inset:0;background:linear-gradient(135deg,#1e3a8a,#7c3aed);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px}
-  .login-box{background:var(--card);border-radius:16px;padding:32px;width:100%;max-width:380px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
-  .login-box h4{margin-bottom:4px;color:var(--text)}
+  .pagination button:disabled{opacity:.4;cursor:not-allowed}
+  .action-btn{padding:3px 9px;font-size:11.5px;margin:0 2px;border-radius:var(--radius-sm)}
+  .form-label{font-size:12px;font-weight:600;margin-bottom:5px;color:var(--text-2);letter-spacing:.1px}
+  .required-mark{color:var(--danger);font-weight:600}
+  .badge{font-weight:600;font-size:10.5px;padding:3px 8px;border-radius:999px;letter-spacing:.3px}
+  .bg-success{background:var(--success)!important}.bg-warning{background:var(--warning)!important;color:#fff!important}.bg-danger{background:var(--danger)!important}.bg-secondary{background:var(--muted)!important}
+  @media(max-width:768px){.stat-card .value{font-size:19px}.table td,.table th{font-size:11.5px;padding:7px 8px}.navbar-custom h5{font-size:14px}.brand-logo{height:24px}}
+  .owner-badge{position:fixed;bottom:12px;right:12px;background:linear-gradient(135deg,#1e40af,#0ea5e9);color:#fff;padding:5px 12px;border-radius:999px;font-size:10.5px;font-weight:600;letter-spacing:.4px;box-shadow:0 4px 12px rgba(30,64,175,.25);z-index:9997;user-select:none;opacity:.9}
+  .login-screen{position:fixed;inset:0;background:linear-gradient(135deg,#0f172a 0%,#1e40af 60%,#0ea5e9 100%);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px}
+  .login-box{background:var(--card);border-radius:var(--radius-lg);padding:36px 32px;width:100%;max-width:400px;box-shadow:0 25px 70px rgba(0,0,0,.35)}
+  .login-box h4{margin-bottom:4px;color:var(--text);font-weight:700;letter-spacing:-.02em}
   .login-box .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
   .app-hidden{display:none}
-  .user-chip{display:inline-flex;align-items:center;gap:8px;padding:4px 12px;background:var(--bg);border:1px solid var(--border);border-radius:20px;font-size:13px;color:var(--text)}
-  .user-chip .role-tag{background:var(--primary);color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;text-transform:uppercase}
-  .user-chip .role-tag.admin{background:#dc2626}
-  .scanner-modal{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:10001;padding:20px}
+  .user-chip{display:inline-flex;align-items:center;gap:8px;padding:5px 12px;background:var(--surface-alt);border:1px solid var(--border);border-radius:999px;font-size:13px;color:var(--text);font-weight:500}
+  .user-chip .role-tag{background:var(--primary);color:#fff;padding:2px 7px;border-radius:999px;font-size:9.5px;text-transform:uppercase;font-weight:700;letter-spacing:.4px}
+  .user-chip .role-tag.admin{background:var(--danger)}
+  .scanner-modal{position:fixed;inset:0;background:rgba(15,23,42,.75);display:none;align-items:center;justify-content:center;z-index:10001;padding:20px;backdrop-filter:blur(4px)}
   .scanner-modal.show{display:flex}
-  .scanner-box{background:var(--card);border-radius:12px;padding:20px;width:100%;max-width:500px}
+  .scanner-box{background:var(--card);border-radius:var(--radius-lg);padding:22px;width:100%;max-width:500px;box-shadow:0 25px 70px rgba(0,0,0,.3)}
+  /* Skeleton loader */
+  .skel{display:inline-block;height:14px;background:linear-gradient(90deg,var(--border) 0%,var(--surface-alt) 50%,var(--border) 100%);background-size:200% 100%;animation:skel 1.3s infinite;border-radius:4px}
+  @keyframes skel{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  /* Install PWA button */
+  .install-btn{display:none;align-items:center;gap:6px;padding:6px 12px;background:var(--primary);color:#fff;border:none;border-radius:var(--radius-sm);font-size:12px;font-weight:600;cursor:pointer;transition:background .15s}
+  .install-btn:hover{background:var(--primary-hover)}
   .scanner-video{width:100%;border-radius:8px;background:#000;max-height:60vh}
   .scanner-status{text-align:center;margin-top:12px;color:var(--muted);font-size:13px}
   .calc-display{background:var(--bg);padding:8px 12px;border-radius:6px;border:1px solid var(--border);font-weight:600;color:var(--success)}
@@ -1164,8 +1289,11 @@ const HTML = `<!DOCTYPE html>
 
 <div class="login-screen" id="loginScreen">
   <div class="login-box">
-    <h4><i class="fas fa-calendar-check text-primary me-2"></i>CaMaNaVa Booking</h4>
-    <div class="sub">Sign in to continue</div>
+    <div class="text-center mb-3">
+      <img src="/icons/booking.png" alt="" style="width:64px;height:64px;border-radius:16px;box-shadow:0 8px 20px rgba(15,23,42,.15)">
+    </div>
+    <h4 class="text-center">CaMaNaVa Booking</h4>
+    <div class="sub text-center">Sign in to continue</div>
     <div class="mb-3"><label class="form-label">Username</label><input type="text" class="form-control" id="loginUser" autocomplete="username"></div>
     <div class="mb-3"><label class="form-label">Password</label><input type="password" class="form-control" id="loginPass" autocomplete="current-password"></div>
     <button class="btn btn-primary w-100" id="btnLogin" onclick="doLogin()"><i class="fas fa-sign-in-alt me-1"></i>Login</button>
@@ -1176,8 +1304,11 @@ const HTML = `<!DOCTYPE html>
 <div id="appContainer" class="app-hidden">
 
 <div class="navbar-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
-  <h5 class="m-0"><i class="fas fa-calendar-check me-2 text-primary"></i>CaMaNaVa Booking Management</h5>
+  <div class="d-flex align-items-center gap-2">
+    <img src="/icons/dashboard.png" alt="CaMaNaVa Booking Management" class="brand-logo">
+  </div>
   <div class="d-flex align-items-center gap-2 flex-wrap">
+    <button class="install-btn" id="installBtn" onclick="installPWA()" title="Install app"><i class="fas fa-download"></i> Install</button>
     <div class="d-flex align-items-center gap-1" style="background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:3px 10px">
       <i class="fas fa-calendar-alt text-primary"></i>
       <select class="form-select form-select-sm border-0 bg-transparent" id="eventPicker" onchange="onEventChange(this.value)" style="min-width:220px;outline:none;box-shadow:none"></select>
@@ -1565,6 +1696,30 @@ const HTML = `<!DOCTYPE html>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// ===== PWA SERVICE WORKER + INSTALL PROMPT =====
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(err => console.warn('SW register failed:', err));
+  });
+}
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  const btn = document.getElementById('installBtn');
+  if (btn) btn.style.display = 'inline-flex';
+});
+async function installPWA(){
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  const { outcome } = await deferredInstallPrompt.userChoice;
+  if (outcome === 'accepted') {
+    const btn = document.getElementById('installBtn');
+    if (btn) btn.style.display = 'none';
+  }
+  deferredInstallPrompt = null;
+}
+
 let allBookings = [];
 let lookups = { customers: [], stores: [], suppliers: [], depts: [] };
 let currentPage = 1;
