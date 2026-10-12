@@ -1,4 +1,3 @@
-
 // Booking Management Web App
 // Single-file Express server + embedded frontend
 // Backend: Google Sheets via service account
@@ -42,9 +41,6 @@ function serveIcon(filename) {
 }
 app.get('/Booking_icon.png', serveIcon('Booking_icon.png'));
 app.get('/Dashboard_icon.png', serveIcon('Dashboard_icon.png'));
-// Case-insensitive fallbacks in case GitHub normalized the filename case
-app.get('/Booking_icon.png', serveIcon('Booking_icon.png'));
-app.get('/Dashboard_icon.png', serveIcon('Dashboard_icon.png'));
 app.get('/favicon.ico', serveIcon('Booking_icon.png'));
 // Diagnostic endpoint: visit /_icons-check to see what files the server sees
 app.get('/_icons-check', (req, res) => {
@@ -66,9 +62,9 @@ app.get('/manifest.json', (req, res) => {
     background_color: '#f3f6f3',
     theme_color: '#14532d',
     icons: [
-      { src: '/Booking_icon.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-      { src: '/Booking_icon.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-      { src: '/Booking_icon.png', sizes: '1254x1254', type: 'image/png', purpose: 'maskable' },
+      { src: '/Booking_icon.png?v=2', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/Booking_icon.png?v=2', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/Booking_icon.png?v=2', sizes: '1254x1254', type: 'image/png', purpose: 'maskable' },
     ],
     categories: ['business', 'productivity'],
   });
@@ -78,8 +74,8 @@ app.get('/sw.js', (req, res) => {
   res.set('Content-Type', 'application/javascript');
   res.set('Service-Worker-Allowed', '/');
   res.send(`
-    const CACHE = 'camanava-v5-navbar';
-    const SHELL = ['/Booking_icon.png', '/Dashboard_icon.png', '/manifest.json'];
+    const CACHE = 'camanava-v6-newicon';
+    const SHELL = ['/Booking_icon.png?v=2', '/Dashboard_icon.png?v=2', '/manifest.json'];
     self.addEventListener('install', e => {
       self.skipWaiting();
       e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).catch(()=>{}));
@@ -1192,8 +1188,8 @@ const HTML = `<!DOCTYPE html>
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="CaMaNaVa Booking">
-<link rel="apple-touch-icon" href="/Booking_icon.png">
-<link rel="icon" type="image/png" href="/Booking_icon.png">
+<link rel="apple-touch-icon" href="/Booking_icon.png?v=2">
+<link rel="icon" type="image/png" sizes="any" href="/Booking_icon.png?v=2">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -1333,7 +1329,7 @@ const HTML = `<!DOCTYPE html>
   <div class="login-box">
     <div class="text-center mb-3">
       <div style="display:inline-flex;align-items:center;justify-content:center;width:84px;height:84px;background:linear-gradient(135deg,#0b1f0e,#14532d);border-radius:22px;box-shadow:0 10px 25px rgba(20,83,45,.35),inset 0 1px 0 rgba(255,255,255,.08);padding:10px">
-        <img src="/Booking_icon.png" alt="" style="width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 2px 4px rgba(0,0,0,.3))">
+        <img src="/Booking_icon.png?v=2" alt="" style="width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 2px 4px rgba(0,0,0,.3))">
       </div>
     </div>
     <h4 class="text-center">CaMaNaVa Booking</h4>
@@ -1349,7 +1345,7 @@ const HTML = `<!DOCTYPE html>
 
 <div class="navbar-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
   <div class="d-flex align-items-center gap-2">
-    <img src="/Dashboard_icon.png" alt="CaMaNaVa Booking Management" class="brand-logo">
+    <img src="/Dashboard_icon.png?v=2" alt="CaMaNaVa Booking Management" class="brand-logo">
   </div>
   <div class="d-flex align-items-center gap-2 flex-wrap">
     <button class="install-btn" id="installBtn" onclick="installPWA()" title="Install app"><i class="fas fa-download"></i> Install</button>
